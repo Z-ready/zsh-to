@@ -1,0 +1,38 @@
+#compdef to
+
+_to() {
+  local -a commands
+
+  commands=(
+    'use:add a search root'
+    'unuse:remove a search root'
+    'roots:list search roots'
+    'add:add a user alias'
+    'remove:remove a user alias'
+    'aliases:list user aliases'
+    'repo:jump to a matching Git repository'
+    'recent:choose from recent jumps'
+    'workspace:add a workspace'
+    'work:jump to a workspace'
+    'unwork:remove a workspace'
+    'workspaces:list workspaces'
+    'ai:use configured AI search'
+    '--reindex:rebuild the directory index'
+    '--doctor:check dependencies and config'
+    '-i:force interactive selection'
+    '-r:search from a temporary root'
+    '--from:search from a temporary root'
+  )
+
+  _arguments \
+    '1:command or query:->cmds' \
+    '*:query:_files -/' && return
+
+  case "$state" in
+    cmds)
+      _describe -t commands 'to command' commands
+      ;;
+  esac
+}
+
+_to "$@"
