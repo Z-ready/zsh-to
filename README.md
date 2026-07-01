@@ -31,7 +31,7 @@ Plugin managers can load `to.plugin.zsh` directly.
 Install from the project tap:
 
 ```zsh
-brew tap Z-ready/zsh-to
+brew tap Z-ready/zsh-to https://github.com/Z-ready/zsh-to
 brew install to
 ```
 
