@@ -28,13 +28,11 @@ Plugin managers can load `to.plugin.zsh` directly.
 
 ### Homebrew
 
-Homebrew installs formulae from taps. For local development, create a tap and
-copy the formula into it:
+Install from the project tap:
 
 ```zsh
-brew tap-new local/to
-cp /Users/z-ready/i/zsh-to/Formula/to.rb "$(brew --repository local/to)/Formula/to.rb"
-brew install local/to/to
+brew tap Z-ready/zsh-to
+brew install to
 ```
 
 Then add this to `~/.zshrc`:
@@ -56,15 +54,13 @@ to use ~/Projects
 to backend
 ```
 
-After publishing this project to a Homebrew tap, installation can become:
+For local formula development, create a local tap and copy the formula into it:
 
 ```zsh
-brew tap yourname/to
-brew install to
+brew tap-new local/to
+cp /Users/z-ready/i/zsh-to/Formula/to.rb "$(brew --repository local/to)/Formula/to.rb"
+brew install local/to/to
 ```
-
-When publishing for real, replace the local `file://` URL in
-`Formula/to.rb` with a GitHub release tarball URL and update `sha256`.
 
 ## Commands
 
