@@ -2,6 +2,8 @@
 
 set -u
 
+typeset -g _TO_CLI_SCRIPT_PATH="${0:A}"
+
 _to_cli_usage() {
   cat <<'EOF'
 Usage:
@@ -19,7 +21,7 @@ EOF
 _to_cli_plugin_path() {
   local script_dir prefix
 
-  script_dir="${0:A:h}"
+  script_dir="${_TO_CLI_SCRIPT_PATH:h}"
   prefix="${script_dir:h}"
 
   if [[ -r "$prefix/share/to/to.plugin.zsh" ]]; then
