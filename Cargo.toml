@@ -1,0 +1,13 @@
+[package]
+name = "to-helper"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Optional helper for the zsh-to directory jumper"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+
+[dependencies]

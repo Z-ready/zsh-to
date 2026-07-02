@@ -6,10 +6,21 @@ class To < Formula
   version "1.0.3"
   license "MIT"
 
-  depends_on "fd" => :recommended
-  depends_on "fzf" => :optional
+  depends_on "rust" => :build
+  depends_on "fd"
+  depends_on "fzf"
+  depends_on "sqlite"
+
+  on_macos do
+    depends_on "fswatch"
+  end
+
+  on_linux do
+    depends_on "inotify-tools"
+  end
 
   def install
+    system "cargo", "install", *std_cargo_args
     pkgshare.install "to.plugin.zsh"
     zsh_completion.install "completions/_to"
     doc.install "README.md"
@@ -31,6 +42,7 @@ class To < Formula
   end
 
   test do
+    assert_path_exists bin/"to-helper"
     system "zsh", "-n", "#{pkgshare}/to.plugin.zsh"
     assert_match "to config:", shell_output("zsh -fc 'source #{pkgshare}/to.plugin.zsh; to --doctor'")
   end
