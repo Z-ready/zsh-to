@@ -21,6 +21,7 @@ class To < Formula
 
   def install
     system "cargo", "install", *std_cargo_args
+    bin.install "bin/to"
     pkgshare.install "to.plugin.zsh"
     zsh_completion.install "completions/_to"
     doc.install "README.md"
@@ -31,7 +32,7 @@ class To < Formula
     <<~EOS
       Add this to your ~/.zshrc:
 
-        source "#{opt_pkgshare}/to.plugin.zsh"
+        eval "$(to init zsh)"
 
       Then reload zsh and configure search roots:
 
@@ -42,7 +43,9 @@ class To < Formula
   end
 
   test do
+    assert_path_exists bin/"to"
     assert_path_exists bin/"to-helper"
+    assert_match "source #{pkgshare}/to.plugin.zsh", shell_output("#{bin}/to init zsh")
     system "zsh", "-n", "#{pkgshare}/to.plugin.zsh"
     assert_match "to config:", shell_output("zsh -fc 'source #{pkgshare}/to.plugin.zsh; to --doctor'")
   end

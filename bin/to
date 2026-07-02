@@ -1,0 +1,68 @@
+#!/usr/bin/env zsh
+
+set -u
+
+_to_cli_usage() {
+  cat <<'EOF'
+Usage:
+  to init zsh       Print zsh integration script
+  to --help         Show this help
+
+After initialization, the zsh function named `to` handles directory jumps:
+
+  eval "$(to init zsh)"
+  to use ~/Projects
+  to backend
+EOF
+}
+
+_to_cli_plugin_path() {
+  local script_dir prefix
+
+  script_dir="${0:A:h}"
+  prefix="${script_dir:h}"
+
+  if [[ -r "$prefix/share/to/to.plugin.zsh" ]]; then
+    print -r -- "$prefix/share/to/to.plugin.zsh"
+    return 0
+  fi
+
+  if [[ -r "${0:A:h:h}/to.plugin.zsh" ]]; then
+    print -r -- "${0:A:h:h}/to.plugin.zsh"
+    return 0
+  fi
+
+  if [[ -r "./to.plugin.zsh" ]]; then
+    print -r -- "${PWD:A}/to.plugin.zsh"
+    return 0
+  fi
+
+  return 1
+}
+
+case "${1:-}" in
+  init)
+    case "${2:-}" in
+      zsh|"")
+        plugin_path="$(_to_cli_plugin_path)" || {
+          print -u2 -- "to: could not locate to.plugin.zsh"
+          exit 1
+        }
+        printf 'source %q\n' "$plugin_path"
+        ;;
+      *)
+        print -u2 -- "to: unsupported shell: $2"
+        print -u2 -- "to: currently supported: zsh"
+        exit 2
+        ;;
+    esac
+    ;;
+  --help|-h|help|"")
+    _to_cli_usage
+    ;;
+  *)
+    print -u2 -- "to: shell integration is not loaded"
+    print -u2 -- 'to: add this to ~/.zshrc: eval "$(to init zsh)"'
+    exit 2
+    ;;
+esac

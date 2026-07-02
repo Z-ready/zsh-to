@@ -29,7 +29,7 @@ brew install to
 Add this to `~/.zshrc`:
 
 ```zsh
-source "$(brew --prefix to)/share/to/to.plugin.zsh"
+eval "$(to init zsh)"
 ```
 
 Reload zsh and add a focused search root:
@@ -292,6 +292,12 @@ directory.
 ## Shell Integration
 
 `to` is a zsh plugin:
+
+```zsh
+eval "$(to init zsh)"
+```
+
+If you prefer to source the plugin directly:
 
 ```zsh
 source "$(brew --prefix to)/share/to/to.plugin.zsh"
