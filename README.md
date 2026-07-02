@@ -109,7 +109,26 @@ compinit
 
 ### 4. Configure roots
 
-`to` searches configured roots. Add narrow roots first:
+`to` searches configured roots. On first load, it automatically uses common
+directories that exist on your machine:
+
+```text
+~/Projects
+~/Code
+~/Developer
+~/dev
+~/src
+~/workspace
+~/workspaces
+~/repos
+~/git
+~/i
+~/Documents
+~/Downloads
+~/Desktop
+```
+
+Add your own roots when your code lives somewhere else:
 
 ```zsh
 to use ~/Projects
@@ -118,7 +137,7 @@ to roots
 ```
 
 Avoid using your whole home directory as the only root unless you really want
-that scan:
+that broader scan:
 
 ```zsh
 to use ~
@@ -205,6 +224,10 @@ to remove blog
 
 ### Search roots
 
+`to` automatically includes common existing development directories such as
+`~/Projects`, `~/Code`, `~/Developer`, `~/dev`, `~/src`, `~/workspace`,
+`~/repos`, `~/git`, and `~/i`.
+
 Add the current directory:
 
 ```zsh
@@ -228,6 +251,16 @@ Remove a root:
 ```zsh
 to unuse ~/Projects
 ```
+
+Search nearly everything under your home directory:
+
+```zsh
+to use ~
+to --reindex
+```
+
+This makes discovery broader, but it also increases indexing time and energy
+use. For most developer machines, adding focused roots is the better default.
 
 ### Workspaces
 
@@ -510,6 +543,15 @@ If `to` finds too many matches, keep broad path search disabled:
 
 ```zsh
 TO_SEARCH_PATH_FRAGMENTS=0
+```
+
+If `to` does not find a repository, check whether its parent directory is in
+your roots:
+
+```zsh
+to roots
+to use ~/path-that-contains-your-repos
+to --reindex
 ```
 
 If `to` is slow, check roots and reduce depth:

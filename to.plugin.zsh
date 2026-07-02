@@ -81,7 +81,21 @@ _to_load_roots() {
     done < "$TO_ROOTS_FILE"
   fi
 
-  default_roots=("$HOME/Projects" "$HOME/Code" "$HOME/Documents" "$HOME/Downloads" "$HOME/Desktop")
+  default_roots=(
+    "$HOME/Projects"
+    "$HOME/Code"
+    "$HOME/Developer"
+    "$HOME/dev"
+    "$HOME/src"
+    "$HOME/workspace"
+    "$HOME/workspaces"
+    "$HOME/repos"
+    "$HOME/git"
+    "$HOME/i"
+    "$HOME/Documents"
+    "$HOME/Downloads"
+    "$HOME/Desktop"
+  )
   TO_ROOTS=("${(@f)$(_to_unique_existing_dirs "${TO_ROOTS[@]}" "${file_roots[@]}" "${default_roots[@]}")}")
 }
 

@@ -37,6 +37,7 @@ mkdir -p \
   "$CONFIG" \
   "$HOME_DIR/Downloads" \
   "$HOME_DIR/Projects" \
+  "$HOME_DIR/i" \
   "$SEARCH_ROOT/app/src/components" \
   "$SEARCH_ROOT/app/services/backend" \
   "$SEARCH_ROOT/app/node_modules/backend" \
@@ -55,6 +56,7 @@ export TO_MAX_DEPTH=8
 TO_ROOTS=("$HOME_DIR")
 source "${0:A:h}/../to.plugin.zsh"
 assert_eq "$(to roots)" "${HOME_DIR:A}/Projects
+${HOME_DIR:A}/i
 ${HOME_DIR:A}/Downloads" "source ignores stale in-shell roots"
 assert_eq "$TO_WATCH_DEBOUNCE" "2" "watch debounce default"
 assert_eq "$TO_AI_RANK_COMMAND" "" "ai rank command default"
@@ -263,10 +265,12 @@ cd "$SEARCH_ROOT" || fail "could not enter search root"
 to use . >/dev/null
 assert_eq "$(to roots)" "${SEARCH_ROOT:A}
 ${HOME_DIR:A}/Projects
+${HOME_DIR:A}/i
 ${HOME_DIR:A}/Downloads" "use and roots persistence"
 
 to unuse "$SEARCH_ROOT" >/dev/null
 assert_eq "$(to roots)" "${HOME_DIR:A}/Projects
+${HOME_DIR:A}/i
 ${HOME_DIR:A}/Downloads" "unuse removes root"
 
 WATCH_BIN="$ROOT/watch-bin"
