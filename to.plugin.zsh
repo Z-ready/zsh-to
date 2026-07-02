@@ -10,7 +10,7 @@ typeset -g TO_SEARCH_PATH_FRAGMENTS
 typeset -g TO_FOLLOW_SYMLINKS
 typeset -g TO_WATCH_DEBOUNCE
 typeset -g _TO_SQLITE_SCHEMA_READY_FILE
-typeset -r _TO_VERSION="1.1.9"
+typeset -r _TO_VERSION="1.2.0"
 
 _to_apply_positive_int_default() {
   local name="$1"
@@ -128,20 +128,7 @@ _to_load_roots() {
   fi
 
   default_roots=(
-    "$HOME/Projects"
-    "$HOME/Code"
-    "$HOME/Developer"
-    "$HOME/dev"
-    "$HOME/src"
-    "$HOME/workspace"
-    "$HOME/workspaces"
-    "$HOME/repos"
-    "$HOME/git"
-    "$HOME/i"
-    "$HOME/Documents"
-    "$HOME/Pictures"
-    "$HOME/Downloads"
-    "$HOME/Desktop"
+    "$HOME"
   )
   TO_ROOTS=("${(@f)$(_to_unique_existing_dirs "${TO_ROOTS[@]}" "${file_roots[@]}" "${default_roots[@]}")}")
 }

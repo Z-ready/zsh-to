@@ -44,6 +44,7 @@ mkdir -p \
   "$HOME_DIR/Downloads" \
   "$HOME_DIR/Projects" \
   "$HOME_DIR/Pictures/头像" \
+  "$HOME_DIR/Random Shelf/lightroom" \
   "$HOME_DIR/i" \
   "$ROOT/empty-root" \
   "$SEARCH_ROOT/app/src/components" \
@@ -78,11 +79,8 @@ assert_eq "$TO_INTERACTIVE_THRESHOLD" "3" "invalid config interactive threshold 
 assert_eq "$TO_SEARCH_PATH_FRAGMENTS" "0" "invalid config path fragment setting falls back to default"
 assert_eq "$TO_FOLLOW_SYMLINKS" "0" "invalid config symlink setting falls back to default"
 assert_eq "$TO_WATCH_DEBOUNCE" "2" "invalid config watch debounce falls back to default"
-assert_eq "$(to --version)" "to 1.1.9" "plugin version output"
-assert_eq "$(to roots)" "${HOME_DIR:A}/Projects
-${HOME_DIR:A}/i
-${HOME_DIR:A}/Pictures
-${HOME_DIR:A}/Downloads" "source ignores stale in-shell roots"
+assert_eq "$(to --version)" "to 1.2.0" "plugin version output"
+assert_eq "$(to roots)" "${HOME_DIR:A}" "source ignores stale in-shell roots"
 assert_eq "$TO_WATCH_DEBOUNCE" "2" "watch debounce default"
 assert_eq "$TO_AI_RANK_COMMAND" "" "ai rank command default"
 
@@ -111,6 +109,10 @@ ok "state lookup stays lazy before index exists"
 cd "$ROOT" || fail "could not reset cwd"
 to 头像
 assert_path_eq "$PWD" "$HOME_DIR/Pictures/头像" "default roots include Pictures"
+
+cd "$ROOT" || fail "could not reset cwd"
+to lightroom
+assert_path_eq "$PWD" "$HOME_DIR/Random Shelf/lightroom" "default root searches arbitrary home subdirectories"
 
 to use "$SEARCH_ROOT" >/dev/null
 
@@ -337,16 +339,10 @@ ok "unknown option reports a single clear error"
 cd "$SEARCH_ROOT" || fail "could not enter search root"
 to use . >/dev/null
 assert_eq "$(to roots)" "${SEARCH_ROOT:A}
-${HOME_DIR:A}/Projects
-${HOME_DIR:A}/i
-${HOME_DIR:A}/Pictures
-${HOME_DIR:A}/Downloads" "use and roots persistence"
+${HOME_DIR:A}" "use and roots persistence"
 
 to unuse "$SEARCH_ROOT" >/dev/null
-assert_eq "$(to roots)" "${HOME_DIR:A}/Projects
-${HOME_DIR:A}/i
-${HOME_DIR:A}/Pictures
-${HOME_DIR:A}/Downloads" "unuse removes root"
+assert_eq "$(to roots)" "${HOME_DIR:A}" "unuse removes root"
 
 WATCH_BIN="$ROOT/watch-bin"
 mkdir -p "$WATCH_BIN"
@@ -376,13 +372,10 @@ bin_doctor_output="$("$TEST_DIR/../bin/to" --doctor)"
 [[ "$bin_doctor_output" == *"max depth: 8"* ]] || fail "bin wrapper doctor config defaults"
 ok "bin wrapper runs doctor before shell integration"
 
-assert_eq "$("$TEST_DIR/../bin/to" --version)" "to 1.1.9" "bin wrapper version output"
+assert_eq "$("$TEST_DIR/../bin/to" --version)" "to 1.2.0" "bin wrapper version output"
 
 bin_roots_output="$("$TEST_DIR/../bin/to" roots)"
-assert_eq "$bin_roots_output" "${HOME_DIR:A}/Projects
-${HOME_DIR:A}/i
-${HOME_DIR:A}/Pictures
-${HOME_DIR:A}/Downloads" "bin wrapper runs roots before shell integration"
+assert_eq "$bin_roots_output" "${HOME_DIR:A}" "bin wrapper runs roots before shell integration"
 
 READONLY_CONFIG="$ROOT/readonly-config"
 READONLY_HOME="$ROOT/readonly-home"

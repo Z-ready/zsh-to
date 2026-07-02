@@ -172,39 +172,31 @@ compinit
 
 ### 5. Configure roots
 
-`to` searches configured roots. On first load, it automatically uses common
-directories that exist on your machine:
+`to` searches configured roots. On first load, the default root is your home
+directory:
 
 ```text
-~/Projects
-~/Code
-~/Developer
-~/dev
-~/src
-~/workspace
-~/workspaces
-~/repos
-~/git
-~/i
-~/Documents
-~/Pictures
-~/Downloads
-~/Desktop
+~
 ```
 
-Add your own roots when your code lives somewhere else:
+That means directories under `~/Projects`, `~/Documents`, `~/Pictures`,
+`~/Downloads`, custom folders, and other normal home subdirectories are
+discoverable without guessing where you keep things. `to` still avoids common
+heavy or noisy directories through `TO_EXCLUDES`, and it does not follow
+symlinked directory trees unless you opt in.
+
+Add extra roots when you keep files outside your home directory:
 
 ```zsh
-to use ~/Projects
-to use ~/Downloads
+to use /Volumes/Media
+to use /work
 to roots
 ```
 
-Avoid using your whole home directory as the only root unless you really want
-that broader scan:
+Remove roots you no longer want:
 
 ```zsh
-to use ~
+to unuse /Volumes/Media
 ```
 
 ## Usage
@@ -288,11 +280,10 @@ to remove blog
 
 ### Search roots
 
-`to` automatically includes common existing development directories such as
-`~/Projects`, `~/Code`, `~/Developer`, `~/dev`, `~/src`, `~/workspace`,
-`~/repos`, `~/git`, and `~/i`. It also includes common user-content
-directories such as `~/Documents`, `~/Pictures`, `~/Downloads`, and
-`~/Desktop` when they exist.
+`to` automatically searches your home directory by default. You do not need to
+teach it whether you keep projects under `~/Projects`, photos under
+`~/Pictures`, downloads under `~/Downloads`, or custom folders directly under
+`~`.
 
 Add the current directory:
 
@@ -318,15 +309,8 @@ Remove a root:
 to unuse ~/Projects
 ```
 
-Search nearly everything under your home directory:
-
-```zsh
-to use ~
-to --reindex
-```
-
-This makes discovery broader, but it also increases indexing time and energy
-use. For most developer machines, adding focused roots is the better default.
+If you want a narrower setup for a very large home directory, set explicit
+roots in `~/.config/to/config.zsh` and lower `TO_MAX_DEPTH`.
 
 ### Workspaces
 
