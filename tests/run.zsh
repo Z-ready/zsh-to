@@ -79,10 +79,12 @@ assert_eq "$TO_INTERACTIVE_THRESHOLD" "3" "invalid config interactive threshold 
 assert_eq "$TO_SEARCH_PATH_FRAGMENTS" "0" "invalid config path fragment setting falls back to default"
 assert_eq "$TO_FOLLOW_SYMLINKS" "0" "invalid config symlink setting falls back to default"
 assert_eq "$TO_WATCH_DEBOUNCE" "2" "invalid config watch debounce falls back to default"
-assert_eq "$(to --version)" "to 1.2.0" "plugin version output"
+assert_eq "$(to --version)" "to 1.2.1" "plugin version output"
 assert_eq "$(to roots)" "${HOME_DIR:A}" "source ignores stale in-shell roots"
 assert_eq "$TO_WATCH_DEBOUNCE" "2" "watch debounce default"
 assert_eq "$TO_AI_RANK_COMMAND" "" "ai rank command default"
+assert_eq "$(_to_unique_existing_dirs "$HOME_DIR/Projects" "$HOME_DIR")" "${HOME_DIR:A}" "broader roots prune descendants"
+assert_eq "$(_to_unique_existing_dirs "$HOME_DIR" "$HOME_DIR/Projects")" "${HOME_DIR:A}" "descendant roots are redundant after broader roots"
 
 STAT_BIN="$ROOT/stat-bin"
 mkdir -p "$STAT_BIN"
@@ -372,7 +374,7 @@ bin_doctor_output="$("$TEST_DIR/../bin/to" --doctor)"
 [[ "$bin_doctor_output" == *"max depth: 8"* ]] || fail "bin wrapper doctor config defaults"
 ok "bin wrapper runs doctor before shell integration"
 
-assert_eq "$("$TEST_DIR/../bin/to" --version)" "to 1.2.0" "bin wrapper version output"
+assert_eq "$("$TEST_DIR/../bin/to" --version)" "to 1.2.1" "bin wrapper version output"
 
 bin_roots_output="$("$TEST_DIR/../bin/to" roots)"
 assert_eq "$bin_roots_output" "${HOME_DIR:A}" "bin wrapper runs roots before shell integration"

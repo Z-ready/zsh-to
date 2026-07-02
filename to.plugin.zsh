@@ -10,7 +10,7 @@ typeset -g TO_SEARCH_PATH_FRAGMENTS
 typeset -g TO_FOLLOW_SYMLINKS
 typeset -g TO_WATCH_DEBOUNCE
 typeset -g _TO_SQLITE_SCHEMA_READY_FILE
-typeset -r _TO_VERSION="1.2.0"
+typeset -r _TO_VERSION="1.2.1"
 
 _to_apply_positive_int_default() {
   local name="$1"
@@ -100,18 +100,30 @@ _to_expand_path() {
 }
 
 _to_unique_existing_dirs() {
-  local -a seen out
-  local dir key
+  local -a out next
+  local dir key existing skip
 
   for dir in "$@"; do
     [[ -n "$dir" ]] || continue
     dir="$(_to_expand_path "$dir")"
     [[ -d "$dir" ]] || continue
     key="${dir:A}"
-    if (( ${seen[(Ie)$key]} == 0 )); then
-      seen+=("$key")
-      out+=("$key")
-    fi
+    skip=0
+    next=()
+
+    for existing in "${out[@]}"; do
+      if [[ "$key" == "$existing" || "$key" == "$existing"/* ]]; then
+        skip=1
+        next+=("$existing")
+      elif [[ "$existing" == "$key"/* ]]; then
+        continue
+      else
+        next+=("$existing")
+      fi
+    done
+
+    out=("${next[@]}")
+    (( skip == 0 )) && out+=("$key")
   done
 
   printf '%s\n' "${out[@]}"
