@@ -119,6 +119,24 @@ compinit
 
 Homebrew is the recommended install path. For a manual source install:
 
+Install build and runtime dependencies first:
+
+```zsh
+# macOS
+brew install rust fd fzf sqlite zsh fswatch
+```
+
+```sh
+# Ubuntu/Debian
+sudo apt-get update
+sudo apt-get install -y git zsh cargo fd-find fzf sqlite3 inotify-tools
+sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+```
+
+`git`, `zsh`, and Rust/Cargo are required to build and load `to`. `fd`, `fzf`,
+`sqlite3`, and a watcher (`fswatch` on macOS, `inotifywait` from
+`inotify-tools` on Linux) provide the full runtime experience.
+
 ```zsh
 git clone https://github.com/Z-ready/zsh-to.git
 cd zsh-to
@@ -141,6 +159,15 @@ Manual installs can also source the plugin directly:
 
 ```zsh
 source ~/.local/share/to/to.plugin.zsh
+```
+
+If you want completions from a manual install, make sure the completion
+directory is in `fpath` before `compinit`:
+
+```zsh
+fpath=("$HOME/.local/share/zsh/site-functions" $fpath)
+autoload -Uz compinit
+compinit
 ```
 
 ### 5. Configure roots
