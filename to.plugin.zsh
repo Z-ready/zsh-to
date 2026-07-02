@@ -4,12 +4,57 @@
 
 typeset -ga TO_ROOTS
 typeset -ga TO_EXCLUDES
-typeset -gi TO_MAX_DEPTH
-typeset -gi TO_INTERACTIVE_THRESHOLD
-typeset -gi TO_SEARCH_PATH_FRAGMENTS
-typeset -gi TO_FOLLOW_SYMLINKS
-typeset -gi TO_WATCH_DEBOUNCE
+typeset -g TO_MAX_DEPTH
+typeset -g TO_INTERACTIVE_THRESHOLD
+typeset -g TO_SEARCH_PATH_FRAGMENTS
+typeset -g TO_FOLLOW_SYMLINKS
+typeset -g TO_WATCH_DEBOUNCE
 typeset -g _TO_SQLITE_SCHEMA_READY_FILE
+typeset -r _TO_VERSION="1.1.6"
+
+_to_apply_positive_int_default() {
+  local name="$1"
+  local default="$2"
+  local value="${(P)name}"
+
+  if [[ "$value" == <-> && "$value" -gt 0 ]]; then
+    typeset -gi "$name=$value"
+  else
+    typeset -gi "$name=$default"
+  fi
+}
+
+_to_apply_bool_default() {
+  local name="$1"
+  local default="$2"
+  local value="${(P)name}"
+
+  if [[ "$value" == 0 || "$value" == 1 ]]; then
+    typeset -gi "$name=$value"
+  else
+    typeset -gi "$name=$default"
+  fi
+}
+
+_to_apply_nonnegative_int_default() {
+  local name="$1"
+  local default="$2"
+  local value="${(P)name}"
+
+  if [[ "$value" == <-> ]]; then
+    typeset -gi "$name=$value"
+  else
+    typeset -gi "$name=$default"
+  fi
+}
+
+_to_apply_config_defaults() {
+  _to_apply_positive_int_default TO_MAX_DEPTH 8
+  _to_apply_positive_int_default TO_INTERACTIVE_THRESHOLD 3
+  _to_apply_bool_default TO_SEARCH_PATH_FRAGMENTS 0
+  _to_apply_bool_default TO_FOLLOW_SYMLINKS 0
+  _to_apply_nonnegative_int_default TO_WATCH_DEBOUNCE 2
+}
 
 : ${TO_CONFIG_HOME:="${XDG_CONFIG_HOME:-$HOME/.config}/to"}
 : ${TO_CONFIG_FILE:="$TO_CONFIG_HOME/config.zsh"}
@@ -22,11 +67,11 @@ typeset -g _TO_SQLITE_SCHEMA_READY_FILE
 : ${TO_AI_COMMAND:=""}
 : ${TO_AI_RANK_COMMAND:=""}
 : ${TO_HELPER:=""}
-(( TO_MAX_DEPTH > 0 )) || TO_MAX_DEPTH=8
-(( TO_INTERACTIVE_THRESHOLD > 0 )) || TO_INTERACTIVE_THRESHOLD=3
-(( TO_SEARCH_PATH_FRAGMENTS == 0 || TO_SEARCH_PATH_FRAGMENTS == 1 )) || TO_SEARCH_PATH_FRAGMENTS=0
-(( TO_FOLLOW_SYMLINKS == 0 || TO_FOLLOW_SYMLINKS == 1 )) || TO_FOLLOW_SYMLINKS=0
-(( TO_WATCH_DEBOUNCE >= 0 )) || TO_WATCH_DEBOUNCE=2
+: ${TO_MAX_DEPTH:=8}
+: ${TO_INTERACTIVE_THRESHOLD:=3}
+: ${TO_SEARCH_PATH_FRAGMENTS:=0}
+: ${TO_FOLLOW_SYMLINKS:=0}
+: ${TO_WATCH_DEBOUNCE:=2}
 
 TO_ROOTS=()
 TO_EXCLUDES=(
@@ -44,6 +89,7 @@ TO_EXCLUDES=(
 if [[ -r "$TO_CONFIG_FILE" ]]; then
   source "$TO_CONFIG_FILE"
 fi
+_to_apply_config_defaults
 
 if [[ -z "$TO_HELPER" ]] && command -v to-helper >/dev/null 2>&1; then
   TO_HELPER="$(command -v to-helper)"
@@ -368,7 +414,7 @@ _to_read_map_value() {
   local table="$3"
   local line item value
 
-  if [[ -n "$table" ]] && command -v sqlite3 >/dev/null 2>&1; then
+  if [[ -n "$table" && ( -r "$TO_INDEX_FILE" || -r "$file" ) ]] && command -v sqlite3 >/dev/null 2>&1; then
     _to_index_ensure_sqlite_schema >/dev/null 2>&1
     _to_import_map_file_to_sqlite "$file" "$table"
     value="$(sqlite3 -noheader "$TO_INDEX_FILE" "select path from $table where name = $(_to_sql_quote "$key");" 2>/dev/null)"
@@ -1160,8 +1206,8 @@ values(
   $depth,
   $is_git,
   $now,
-  coalesce((select last_used from dirs where path = $(_to_sql_quote "$dir")), 0),
-  coalesce((select hit_count from dirs where path = $(_to_sql_quote "$dir")), 0)
+  $now,
+  coalesce((select hit_count from dirs where path = $(_to_sql_quote "$dir")), 0) + 1
 )
 on conflict(path) do update set
   name = excluded.name,
@@ -1169,7 +1215,9 @@ on conflict(path) do update set
   parent = excluded.parent,
   depth = excluded.depth,
   is_git = excluded.is_git,
-  last_seen = excluded.last_seen;
+  last_seen = excluded.last_seen,
+  last_used = excluded.last_used,
+  hit_count = dirs.hit_count + 1;
 delete from tokens where dir_id in (select id from dirs where path = $(_to_sql_quote "$dir"));
 SQL
   if [[ -n "$values_sql" ]]; then
@@ -1207,30 +1255,12 @@ _to_index_upsert_dir() {
   fi
 }
 
-_to_index_touch_path() {
-  local dir="${1:A}"
-  local now="$(_to_now)"
-
-  [[ -d "$dir" ]] || return 0
-  if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]]; then
-    _to_index_ensure_sqlite_schema || return 0
-    sqlite3 "$TO_INDEX_FILE" >/dev/null 2>/dev/null <<SQL
-update dirs
-set hit_count = hit_count + 1,
-    last_used = $now,
-    last_seen = case when last_seen > 0 then last_seen else $now end
-where path = $(_to_sql_quote "$dir");
-SQL
-  fi
-}
-
 _to_after_cd() {
   local dir="${1:A}"
 
   [[ -d "$dir" ]] || return 0
   _to_record_recent "$dir"
   _to_index_upsert_dir "$dir"
-  _to_index_touch_path "$dir"
 }
 
 _to_first_exact_match() {
@@ -1616,6 +1646,7 @@ _to_resolve() {
         print -r -- "$exact_target"
         return
       fi
+      (( TO_SEARCH_PATH_FRAGMENTS == 1 )) || return 1
     fi
   fi
 
@@ -1893,6 +1924,7 @@ Usage:
   to --doctor               Check dependencies and config
   to --reindex              Rebuild the directory index
   to --watch                Watch roots and reindex after filesystem changes
+  to --version              Show version
 
 Config:
   TO_SEARCH_PATH_FRAGMENTS=0  Prefer exact directory names by default
@@ -1907,7 +1939,7 @@ EOF
 }
 
 to() {
-  local target alias_target workspace_target
+  local target alias_target workspace_target resolve_status
 
   case "$1" in
     use)
@@ -1995,6 +2027,9 @@ to() {
     --watch)
       _to_watch
       ;;
+    --version|-V)
+      print -r -- "to $_TO_VERSION"
+      ;;
     -h|--help|"")
       _to_help
       ;;
@@ -2012,7 +2047,11 @@ to() {
         fi
       fi
       target="$(_to_resolve "$@")"
-      if [[ $? -ne 0 || -z "$target" ]]; then
+      resolve_status=$?
+      if (( resolve_status == 2 )); then
+        return 2
+      fi
+      if [[ $resolve_status -ne 0 || -z "$target" ]]; then
         print -u2 -- "to: no matching directory: ${(j: :)@}"
         print -u2 -- "to: add a search root with: to use <dir>"
         return 1

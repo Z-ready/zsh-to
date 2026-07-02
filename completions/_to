@@ -20,6 +20,7 @@ _to() {
     '--reindex:rebuild the directory index'
     '--watch:watch roots and reindex after filesystem changes'
     '--doctor:check dependencies and config'
+    '--version:show version'
     'init:print shell integration script'
     '-i:force interactive selection'
     '-r:search from a temporary root'

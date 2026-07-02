@@ -8,6 +8,9 @@ _to_cli_usage() {
   cat <<'EOF'
 Usage:
   to init zsh       Print zsh integration script
+  to --doctor       Check dependencies and config
+  to --reindex      Rebuild the directory index
+  to --version      Show version
   to --help         Show this help
 
 After initialization, the zsh function named `to` handles directory jumps:
@@ -29,8 +32,8 @@ _to_cli_plugin_path() {
     return 0
   fi
 
-  if [[ -r "${0:A:h:h}/to.plugin.zsh" ]]; then
-    print -r -- "${0:A:h:h}/to.plugin.zsh"
+  if [[ -r "${_TO_CLI_SCRIPT_PATH:h:h}/to.plugin.zsh" ]]; then
+    print -r -- "${_TO_CLI_SCRIPT_PATH:h:h}/to.plugin.zsh"
     return 0
   fi
 
@@ -40,6 +43,17 @@ _to_cli_plugin_path() {
   fi
 
   return 1
+}
+
+_to_cli_run_plugin_command() {
+  local plugin_path
+
+  plugin_path="$(_to_cli_plugin_path)" || {
+    print -u2 -- "to: could not locate to.plugin.zsh"
+    exit 1
+  }
+  source "$plugin_path"
+  to "$@"
 }
 
 case "${1:-}" in
@@ -58,6 +72,12 @@ case "${1:-}" in
         exit 2
         ;;
     esac
+    ;;
+  --doctor|--reindex|--watch|use|unuse|roots|add|alias|remove|unalias|aliases|workspace|unwork|workspaces)
+    _to_cli_run_plugin_command "$@"
+    ;;
+  --version|-V)
+    _to_cli_run_plugin_command "$@"
     ;;
   --help|-h|help|"")
     _to_cli_usage

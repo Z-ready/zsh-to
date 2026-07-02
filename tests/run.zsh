@@ -32,12 +32,14 @@ ROOT="${TMPDIR:-/tmp}/to-test.$$"
 CONFIG="$ROOT/config"
 HOME_DIR="$ROOT/home"
 SEARCH_ROOT="$ROOT/search"
+TEST_DIR="${0:A:h}"
 
 mkdir -p \
   "$CONFIG" \
   "$HOME_DIR/Downloads" \
   "$HOME_DIR/Projects" \
   "$HOME_DIR/i" \
+  "$ROOT/empty-root" \
   "$SEARCH_ROOT/app/src/components" \
   "$SEARCH_ROOT/app/services/backend" \
   "$SEARCH_ROOT/app/node_modules/backend" \
@@ -45,6 +47,9 @@ mkdir -p \
   "$SEARCH_ROOT/blog" \
   "$SEARCH_ROOT/stale-cache" \
   "$SEARCH_ROOT/reindex-stale" \
+  "$SEARCH_ROOT/moved-before" \
+  "$SEARCH_ROOT/Space Dir/child target" \
+  "$SEARCH_ROOT/unicode/naïve-café" \
   "$SEARCH_ROOT/workspace-school" \
   "$SEARCH_ROOT/repos/nginx/.git" \
   "$SEARCH_ROOT/other/backend"
@@ -52,14 +57,33 @@ mkdir -p \
 export HOME="$HOME_DIR"
 export TO_CONFIG_HOME="$CONFIG"
 export TO_MAX_DEPTH=8
+cat > "$CONFIG/config.zsh" <<'EOF'
+TO_MAX_DEPTH=bad
+TO_INTERACTIVE_THRESHOLD=bad
+TO_SEARCH_PATH_FRAGMENTS=bad
+TO_FOLLOW_SYMLINKS=bad
+TO_WATCH_DEBOUNCE=bad
+EOF
 
 TO_ROOTS=("$HOME_DIR")
-source "${0:A:h}/../to.plugin.zsh"
+source "$TEST_DIR/../to.plugin.zsh"
+assert_eq "$TO_MAX_DEPTH" "8" "invalid config max depth falls back to default"
+assert_eq "$TO_INTERACTIVE_THRESHOLD" "3" "invalid config interactive threshold falls back to default"
+assert_eq "$TO_SEARCH_PATH_FRAGMENTS" "0" "invalid config path fragment setting falls back to default"
+assert_eq "$TO_FOLLOW_SYMLINKS" "0" "invalid config symlink setting falls back to default"
+assert_eq "$TO_WATCH_DEBOUNCE" "2" "invalid config watch debounce falls back to default"
+assert_eq "$(to --version)" "to 1.1.6" "plugin version output"
 assert_eq "$(to roots)" "${HOME_DIR:A}/Projects
 ${HOME_DIR:A}/i
 ${HOME_DIR:A}/Downloads" "source ignores stale in-shell roots"
 assert_eq "$TO_WATCH_DEBOUNCE" "2" "watch debounce default"
 assert_eq "$TO_AI_RANK_COMMAND" "" "ai rank command default"
+
+if to -r "$ROOT/empty-root" no-state-match >/dev/null 2>&1; then
+  fail "empty root should not resolve missing directory"
+fi
+[[ ! -e "$TO_INDEX_FILE" ]] || fail "alias/workspace miss should not create sqlite index"
+ok "state lookup stays lazy before index exists"
 
 to use "$SEARCH_ROOT" >/dev/null
 
@@ -126,6 +150,15 @@ if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]]; then
   reindex_stale_count="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from dirs where path = '$reindex_stale_path';")"
   assert_eq "$reindex_stale_count" "0" "changed root refresh removes stale directories"
 
+  mv "$SEARCH_ROOT/moved-before" "$SEARCH_ROOT/moved-after" || fail "could not move indexed fixture"
+  sleep 1
+  touch "$SEARCH_ROOT"
+  to --reindex >/dev/null 2>&1
+  moved_before_count="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from dirs where path = '${SEARCH_ROOT:A}/moved-before';")"
+  moved_after_count="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from dirs where path = '${SEARCH_ROOT:A}/moved-after';")"
+  assert_eq "$moved_before_count" "0" "changed root refresh removes moved source"
+  assert_eq "$moved_after_count" "1" "changed root refresh indexes moved destination"
+
   fake_helper="$ROOT/to-helper"
   helper_log="$ROOT/helper.log"
   cat > "$fake_helper" <<'EOF'
@@ -189,6 +222,14 @@ TO_SEARCH_PATH_FRAGMENTS=0
 cd "$ROOT" || fail "could not reset cwd"
 to -r "$SEARCH_ROOT" src/components
 assert_path_eq "$PWD" "$SEARCH_ROOT/app/src/components" "path fragment jump"
+
+cd "$ROOT" || fail "could not reset cwd"
+to -r "$SEARCH_ROOT" "child target"
+assert_path_eq "$PWD" "$SEARCH_ROOT/Space Dir/child target" "space-containing path jump"
+
+cd "$ROOT" || fail "could not reset cwd"
+to -r "$SEARCH_ROOT" naïve-café
+assert_path_eq "$PWD" "$SEARCH_ROOT/unicode/naïve-café" "unicode path jump"
 
 cd "$ROOT" || fail "could not reset cwd"
 to -r "$SEARCH_ROOT" app backend
@@ -261,6 +302,11 @@ missing_dir_output="$(to does-not-exist-here 2>&1 >/dev/null)"
 [[ "$missing_dir_output" == *"no matching directory"* ]] || fail "missing directory did not explain failure: $missing_dir_output"
 ok "missing directory reports no match"
 
+unknown_option_output="$(to --definitely-not-a-to-option 2>&1 >/dev/null)"
+[[ "$unknown_option_output" == "to: unknown option: --definitely-not-a-to-option" ]] \
+  || fail "unknown option should report only the option error: $unknown_option_output"
+ok "unknown option reports a single clear error"
+
 cd "$SEARCH_ROOT" || fail "could not enter search root"
 to use . >/dev/null
 assert_eq "$(to roots)" "${SEARCH_ROOT:A}
@@ -295,5 +341,17 @@ doctor_output="$(to --doctor)"
 [[ "$doctor_output" == *"sqlite3:"* ]] || fail "doctor sqlite status"
 [[ "$doctor_output" == *"ai rank command:"* ]] || fail "doctor ai rank command status"
 ok "doctor output"
+
+bin_doctor_output="$("$TEST_DIR/../bin/to" --doctor)"
+[[ "$bin_doctor_output" == *"to config: $CONFIG/config.zsh"* ]] || fail "bin wrapper doctor config path"
+[[ "$bin_doctor_output" == *"max depth: 8"* ]] || fail "bin wrapper doctor config defaults"
+ok "bin wrapper runs doctor before shell integration"
+
+assert_eq "$("$TEST_DIR/../bin/to" --version)" "to 1.1.6" "bin wrapper version output"
+
+bin_roots_output="$("$TEST_DIR/../bin/to" roots)"
+assert_eq "$bin_roots_output" "${HOME_DIR:A}/Projects
+${HOME_DIR:A}/i
+${HOME_DIR:A}/Downloads" "bin wrapper runs roots before shell integration"
 
 print -- "all tests passed"

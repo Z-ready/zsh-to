@@ -59,6 +59,12 @@ Jump:
 to backend
 ```
 
+Check the installed version:
+
+```zsh
+to --version
+```
+
 ## Installation
 
 `to` can be installed with Homebrew.
@@ -107,7 +113,35 @@ autoload -Uz compinit
 compinit
 ```
 
-### 4. Configure roots
+### 4. Source install
+
+Homebrew is the recommended install path. For a manual source install:
+
+```zsh
+git clone https://github.com/Z-ready/zsh-to.git
+cd zsh-to
+cargo build --release
+
+install -d ~/.local/bin ~/.local/share/to ~/.local/share/zsh/site-functions
+install -m 755 bin/to ~/.local/bin/to
+install -m 755 target/release/to-helper ~/.local/bin/to-helper
+install -m 644 to.plugin.zsh ~/.local/share/to/to.plugin.zsh
+install -m 644 completions/_to ~/.local/share/zsh/site-functions/_to
+```
+
+Then make sure `~/.local/bin` is on `PATH` and add the normal zsh setup:
+
+```zsh
+eval "$(to init zsh)"
+```
+
+Manual installs can also source the plugin directly:
+
+```zsh
+source ~/.local/share/to/to.plugin.zsh
+```
+
+### 5. Configure roots
 
 `to` searches configured roots. On first load, it automatically uses common
 directories that exist on your machine:
@@ -315,6 +349,8 @@ to ai docker
 
 Set `TO_AI_COMMAND` to provide candidates for `to ai <query...>`.
 Set `TO_AI_RANK_COMMAND` to reorder normal fallback candidates from stdin.
+These hooks execute commands you configure yourself. Treat them like shell
+aliases: only point them at scripts you trust.
 
 ## Command Reference
 
@@ -346,7 +382,13 @@ to init zsh               # print zsh integration script
 to --reindex              # refresh the SQLite/TSV directory index
 to --watch                # watch roots and reindex after filesystem changes
 to --doctor               # check dependencies and config
+to --version              # show version
 ```
+
+`to init zsh`, `to --doctor`, `to --reindex`, `to --watch`, `to --version`,
+and state-management commands such as `to roots` can run from the installed
+`bin/to` wrapper. Directory jumps require shell integration because only a zsh
+function can change the current shell's working directory.
 
 When multiple matches are found, `to` opens `fzf`. If `fzf` is unavailable, it
 prints a numbered list.
@@ -458,6 +500,22 @@ TO_CONFIG_HOME="$HOME/.local/state/to"
 eval "$(to init zsh)"
 ```
 
+Invalid numeric or boolean config values fall back to safe defaults instead of
+breaking shell startup.
+
+## Safety
+
+`to` changes only shell state and files under `TO_CONFIG_HOME`. It does not
+delete user directories. When cached paths become stale, `to` prunes those rows
+from its own SQLite/TSV index and falls back to live filesystem search.
+
+Path handling is quoted and tested with spaces and unicode. SQL queries quote
+user input before passing it to SQLite.
+
+`TO_AI_COMMAND` and `TO_AI_RANK_COMMAND` are explicit escape hatches for users
+who want custom ranking. They are not sandboxed; configure them only with
+commands you would be comfortable running directly in your shell.
+
 ## Performance
 
 `to` does not run a background daemon. Idle cost is effectively zero.
@@ -563,19 +621,19 @@ TO_MAX_DEPTH=5
 
 ## Development
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full local verification gate and
+[RELEASE.md](RELEASE.md) for the release checklist.
+
 Run the zsh test suite:
 
 ```zsh
 zsh tests/run.zsh
 ```
 
-Run the Rust helper checks:
+Run the full local verification gate:
 
 ```zsh
-cargo fmt -- --check
-cargo test
-cargo build --release
-cargo clippy --all-targets -- -D warnings
+zsh scripts/check.zsh
 ```
 
 For local formula development:
