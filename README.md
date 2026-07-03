@@ -10,12 +10,14 @@ to backend
 to src/components
 to app backend
 to repo nginx
+to cargo tokio
+to code auth
 ```
 
 `to` combines zoxide-style history with developer-focused discovery.
 Frequently and recently used directories jump first, while the configured-root
-index and live fallback still find folders, files, and Git repositories you
-have never visited before.
+index and live fallback still find folders, files, Git repositories, and
+developer project objects you have never visited before.
 
 [Getting started](#getting-started) • [Installation](#installation) •
 [Usage](#usage) • [Configuration](#configuration) •
@@ -412,6 +414,25 @@ Jump from anywhere inside a repository back to its root:
 to git
 ```
 
+### Object navigation
+
+Use explicit object commands when you know what kind of destination you want:
+
+```zsh
+to file README.md       # directory containing that file
+to dir backend          # directory named or matching backend
+to ws work              # workspace named or matching work
+to cargo tokio          # Rust project with matching Cargo.toml content
+to npm react            # Node project with matching package.json content
+to py fastapi           # Python project metadata mentioning fastapi
+to docker nginx         # Docker project metadata mentioning nginx
+to code auth            # directory containing matching code text
+```
+
+These commands respect configured roots, excludes, max depth, and symlink
+settings. Successful object jumps update frecency history and the directory
+index, so repeated jumps become history or SQLite hits.
+
 ### Recent destinations
 
 Jump from recent successful destinations:
@@ -462,6 +483,14 @@ to repo                   # list recent Git repositories
 to repo nginx             # jump to a matching Git repository
 to repo ai template       # multi-keyword repository search
 to git                    # jump to the nearest parent Git repository
+to file README.md         # jump to a directory containing README.md
+to dir backend            # jump to a matching directory
+to ws work                # jump to a matching workspace
+to cargo tokio            # jump by Cargo.toml metadata
+to npm react              # jump by package.json metadata
+to py fastapi             # jump by Python project metadata
+to docker nginx           # jump by Docker metadata
+to code auth              # jump by code text under configured roots
 to recent                 # jump from recent destinations
 to ai docker              # use TO_AI_COMMAND, or broad fallback search
 
@@ -495,6 +524,11 @@ Resolution order:
 8. SQLite path-fragment matches.
 9. Live directory discovery with `fd`, with `find` fallback.
 10. File-name discovery, jumping to the containing directory.
+
+Explicit object commands narrow the same engine by intent. `to file` uses the
+file cache and on-demand file-name scan, `to dir` uses directory matching,
+`to ws` uses workspace state, package commands inspect project metadata files,
+and `to code` searches file contents under configured roots.
 
 Frecency means frequency multiplied by recency. A directory starts with one
 visit, each successful jump adds another visit, and recent visits weigh more:

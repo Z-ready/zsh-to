@@ -58,6 +58,11 @@ mkdir -p \
   "$SEARCH_ROOT/media/photos" \
   "$SEARCH_ROOT/media/space names" \
   "$SEARCH_ROOT/blog" \
+  "$SEARCH_ROOT/projects/rust/tokio-tool/src" \
+  "$SEARCH_ROOT/projects/node/react-panel/src" \
+  "$SEARCH_ROOT/projects/python/fastapi-service/app" \
+  "$SEARCH_ROOT/projects/docker/nginx-stack" \
+  "$SEARCH_ROOT/projects/code/auth-module/lib" \
   "$SEARCH_ROOT/stale-cache" \
   "$SEARCH_ROOT/reindex-stale" \
   "$SEARCH_ROOT/moved-before" \
@@ -78,6 +83,35 @@ touch \
   "$SEARCH_ROOT/history/hot-file/project spec.md" \
   "$SEARCH_ROOT/history/cold-file/project spec.md" \
   "$SEARCH_ROOT/history/hot-file/音乐 mix.mp3"
+
+cat > "$SEARCH_ROOT/projects/rust/tokio-tool/Cargo.toml" <<'EOF'
+[package]
+name = "tokio-tool"
+version = "0.1.0"
+
+[dependencies]
+tokio = "1"
+EOF
+
+cat > "$SEARCH_ROOT/projects/node/react-panel/package.json" <<'EOF'
+{"name":"react-panel","dependencies":{"react":"latest"}}
+EOF
+
+cat > "$SEARCH_ROOT/projects/python/fastapi-service/pyproject.toml" <<'EOF'
+[project]
+name = "fastapi-service"
+dependencies = ["fastapi"]
+EOF
+
+cat > "$SEARCH_ROOT/projects/docker/nginx-stack/Dockerfile" <<'EOF'
+FROM nginx:alpine
+EOF
+
+cat > "$SEARCH_ROOT/projects/code/auth-module/lib/auth.zsh" <<'EOF'
+authenticate_user() {
+  print auth
+}
+EOF
 
 export HOME="$HOME_DIR"
 export TO_CONFIG_HOME="$CONFIG"
@@ -105,7 +139,7 @@ assert_eq "$TO_AUTOWATCH" "0" "invalid config autowatch falls back to default"
 assert_eq "$TO_AUTO_ADD_ROOTS" "0" "invalid config auto add roots falls back to default"
 assert_eq "$TO_FRECENCY" "1" "invalid config frecency falls back to default"
 assert_eq "$TO_FRECENCY_THRESHOLD" "1" "invalid config frecency threshold falls back to default"
-assert_eq "$(to --version)" "to 1.3.0" "plugin version output"
+assert_eq "$(to --version)" "to 1.4.0" "plugin version output"
 assert_eq "$(to roots)" "${HOME_DIR:A}" "source ignores stale in-shell roots"
 assert_eq "$TO_WATCH_DEBOUNCE" "2" "watch debounce default"
 assert_eq "$TO_AI_RANK_COMMAND" "" "ai rank command default"
@@ -494,6 +528,38 @@ if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]]; then
 fi
 
 cd "$ROOT" || fail "could not reset cwd"
+to ws school
+assert_path_eq "$PWD" "$SEARCH_ROOT/workspace-school" "object workspace jump"
+
+cd "$ROOT" || fail "could not reset cwd"
+to file README.md
+assert_path_eq "$PWD" "$SEARCH_ROOT/docs/assets" "object file jump"
+
+cd "$ROOT" || fail "could not reset cwd"
+to dir backend
+assert_path_eq "$PWD" "$SEARCH_ROOT/app/services/backend" "object dir jump"
+
+cd "$ROOT" || fail "could not reset cwd"
+to cargo tokio
+assert_path_eq "$PWD" "$SEARCH_ROOT/projects/rust/tokio-tool" "cargo object jump"
+
+cd "$ROOT" || fail "could not reset cwd"
+to npm react
+assert_path_eq "$PWD" "$SEARCH_ROOT/projects/node/react-panel" "npm object jump"
+
+cd "$ROOT" || fail "could not reset cwd"
+to py fastapi
+assert_path_eq "$PWD" "$SEARCH_ROOT/projects/python/fastapi-service" "python object jump"
+
+cd "$ROOT" || fail "could not reset cwd"
+to docker nginx
+assert_path_eq "$PWD" "$SEARCH_ROOT/projects/docker/nginx-stack" "docker object jump"
+
+cd "$ROOT" || fail "could not reset cwd"
+to code authenticate_user
+assert_path_eq "$PWD" "$SEARCH_ROOT/projects/code/auth-module/lib" "code object jump"
+
+cd "$ROOT" || fail "could not reset cwd"
 to repo nginx
 assert_path_eq "$PWD" "$SEARCH_ROOT/repos/nginx" "git repo jump"
 if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]]; then
@@ -678,7 +744,7 @@ bin_doctor_output="$("$TEST_DIR/../bin/to" --doctor)"
 [[ "$bin_doctor_output" == *"max depth: 8"* ]] || fail "bin wrapper doctor config defaults"
 ok "bin wrapper runs doctor before shell integration"
 
-assert_eq "$("$TEST_DIR/../bin/to" --version)" "to 1.3.0" "bin wrapper version output"
+assert_eq "$("$TEST_DIR/../bin/to" --version)" "to 1.4.0" "bin wrapper version output"
 
 bin_roots_output="$("$TEST_DIR/../bin/to" roots)"
 assert_eq "$bin_roots_output" "${HOME_DIR:A}" "bin wrapper runs roots before shell integration"

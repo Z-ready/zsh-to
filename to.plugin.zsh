@@ -22,7 +22,7 @@ typeset -g TO_FRECENCY_THRESHOLD
 typeset -g _TO_SQLITE_SCHEMA_READY_FILE
 typeset -g _TO_AUTOWATCH_PID
 typeset -g _TO_AUTOWATCH_PID_FILE
-typeset -r _TO_VERSION="1.3.0"
+typeset -r _TO_VERSION="1.4.0"
 
 _to_apply_positive_int_default() {
   local name="$1"
@@ -2209,6 +2209,269 @@ _to_collect_file_parent_matches() {
   printf '%s\n' "${ranked[@]}"
 }
 
+_to_search_marker_file() {
+  local root="$1"
+  local marker="$2"
+  local -a exclude_args follow_args prune_expr
+
+  if command -v fd >/dev/null 2>&1; then
+    exclude_args=("${(@f)$(_to_exclude_args_fd)}")
+    (( TO_FOLLOW_SYMLINKS == 1 )) && follow_args=(--follow)
+    fd --type f --hidden "${follow_args[@]}" --max-depth "$TO_MAX_DEPTH" \
+      --glob --ignore-case "${exclude_args[@]}" "$marker" "$root" 2>/dev/null
+    return
+  fi
+
+  prune_expr=("${(@f)$(_to_prune_expr_find)}")
+  if (( ${#prune_expr} > 0 )); then
+    find "$root" -maxdepth "$TO_MAX_DEPTH" \( "${prune_expr[@]}" \) -prune -o -type f -iname "$marker" -print 2>/dev/null
+  else
+    find "$root" -maxdepth "$TO_MAX_DEPTH" -type f -iname "$marker" -print 2>/dev/null
+  fi
+}
+
+_to_file_contains_all_terms() {
+  local file="$1"
+  shift
+  local term
+
+  [[ -f "$file" ]] || return 1
+  (( $# > 0 )) || return 0
+  for term in "$@"; do
+    command grep -I -i -F -q -- "$term" "$file" 2>/dev/null || return 1
+  done
+}
+
+_to_parent_matches_terms() {
+  local parent="$1"
+  shift
+  local haystack="${(L)parent}"
+  local term
+
+  for term in "$@"; do
+    term="${(L)term}"
+    [[ "$haystack" == *"$term"* ]] || return 1
+  done
+}
+
+_to_marker_parent_matches() {
+  local kind="$1"
+  shift
+  local -a roots markers parents ranked seen
+  local root marker file parent key
+
+  _to_load_roots
+  roots=("${TO_ROOTS[@]}")
+  case "$kind" in
+    cargo)
+      markers=(Cargo.toml)
+      ;;
+    npm)
+      markers=(package.json)
+      ;;
+    py)
+      markers=(pyproject.toml setup.py setup.cfg requirements.txt)
+      ;;
+    docker)
+      markers=(Dockerfile docker-compose.yml docker-compose.yaml compose.yml compose.yaml)
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  for root in "${roots[@]}"; do
+    [[ -d "$root" ]] || continue
+    for marker in "${markers[@]}"; do
+      while IFS= read -r file; do
+        [[ -f "$file" ]] || continue
+        parent="${file:A:h}"
+        if (( $# > 0 )); then
+          _to_file_contains_all_terms "$file" "$@" || _to_parent_matches_terms "$parent" "$@" || continue
+        fi
+        key="${parent:A}"
+        (( ${seen[(Ie)$key]} > 0 )) && continue
+        seen+=("$key")
+        parents+=("$key")
+        _to_index_upsert_dir "$key"
+      done < <(_to_search_marker_file "$root" "$marker")
+    done
+  done
+
+  (( ${#parents} > 0 )) || return 1
+  _to_record_search_outcome "Object Filesystem Fallback"
+  ranked=("${(@f)$(_to_rank_dirs_by_usage "${parents[@]}")}")
+  printf '%s\n' "${ranked[@]}"
+}
+
+_to_code_parent_matches() {
+  local -a roots parents ranked seen exclude_args follow_args prune_expr find_matches
+  local root file parent key term
+
+  (( $# > 0 )) || return 1
+  _to_load_roots
+  roots=("${TO_ROOTS[@]}")
+
+  for root in "${roots[@]}"; do
+    [[ -d "$root" ]] || continue
+    if command -v rg >/dev/null 2>&1; then
+      local -a rg_excludes
+      for term in "${TO_EXCLUDES[@]}"; do
+        rg_excludes+=(--glob "!$term/**")
+      done
+      for term in "$@"; do
+        while IFS= read -r file; do
+          [[ -f "$file" ]] || continue
+          _to_file_contains_all_terms "$file" "$@" || continue
+          parent="${file:A:h}"
+          key="${parent:A}"
+          (( ${seen[(Ie)$key]} > 0 )) && continue
+          seen+=("$key")
+          parents+=("$key")
+          _to_index_upsert_dir "$key"
+        done < <(rg --files-with-matches --ignore-case --fixed-strings --hidden --max-depth "$TO_MAX_DEPTH" "${rg_excludes[@]}" -- "$term" "$root" 2>/dev/null)
+        break
+      done
+    elif command -v fd >/dev/null 2>&1; then
+      exclude_args=("${(@f)$(_to_exclude_args_fd)}")
+      (( TO_FOLLOW_SYMLINKS == 1 )) && follow_args=(--follow)
+      while IFS= read -r file; do
+        [[ -f "$file" ]] || continue
+        _to_file_contains_all_terms "$file" "$@" || continue
+        parent="${file:A:h}"
+        key="${parent:A}"
+        (( ${seen[(Ie)$key]} > 0 )) && continue
+        seen+=("$key")
+        parents+=("$key")
+        _to_index_upsert_dir "$key"
+      done < <(fd --type f --hidden "${follow_args[@]}" --max-depth "$TO_MAX_DEPTH" "${exclude_args[@]}" . "$root" 2>/dev/null)
+    else
+      prune_expr=("${(@f)$(_to_prune_expr_find)}")
+      if (( ${#prune_expr} > 0 )); then
+        find_matches=("${(@f)$(find "$root" -maxdepth "$TO_MAX_DEPTH" \( "${prune_expr[@]}" \) -prune -o -type f -print 2>/dev/null)}")
+      else
+        find_matches=("${(@f)$(find "$root" -maxdepth "$TO_MAX_DEPTH" -type f -print 2>/dev/null)}")
+      fi
+      for file in "${find_matches[@]}"; do
+        [[ -f "$file" ]] || continue
+        _to_file_contains_all_terms "$file" "$@" || continue
+        parent="${file:A:h}"
+        key="${parent:A}"
+        (( ${seen[(Ie)$key]} > 0 )) && continue
+        seen+=("$key")
+        parents+=("$key")
+        _to_index_upsert_dir "$key"
+      done
+    fi
+  done
+
+  (( ${#parents} > 0 )) || return 1
+  _to_record_search_outcome "Code Filesystem Fallback"
+  ranked=("${(@f)$(_to_rank_dirs_by_usage "${parents[@]}")}")
+  printf '%s\n' "${ranked[@]}"
+}
+
+_to_workspace_matches() {
+  local query="${(L)1}"
+  local line key value
+  local -a matches ranked seen
+
+  [[ -n "$query" ]] || return 1
+  value="$(_to_workspace "$query")"
+  if [[ -n "$value" ]]; then
+    print -r -- "$value"
+    return
+  fi
+
+  if [[ -n "workspaces" ]] && command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]]; then
+    _to_index_ensure_sqlite_schema >/dev/null 2>&1
+    _to_import_map_file_to_sqlite "$TO_WORKSPACES_FILE" workspaces
+    matches=("${(@f)$(sqlite3 -noheader "$TO_INDEX_FILE" "select path from workspaces where name like $(_to_sql_quote "%$query%") or lower(path) like $(_to_sql_quote "%$query%") order by name, path limit 50;" 2>/dev/null)}")
+  fi
+
+  if [[ -r "$TO_WORKSPACES_FILE" ]]; then
+    while IFS= read -r line; do
+      key="${line%%	*}"
+      value="${line#*	}"
+      [[ "$value" == "$line" || ! -d "$value" ]] && continue
+      [[ "${(L)key}" == *"$query"* || "${(L)value}" == *"$query"* ]] || continue
+      matches+=("${value:A}")
+    done < "$TO_WORKSPACES_FILE"
+  fi
+
+  for value in "${matches[@]}"; do
+    [[ -d "$value" ]] || continue
+    key="${value:A}"
+    (( ${seen[(Ie)$key]} > 0 )) && continue
+    seen+=("$key")
+    ranked+=("$key")
+  done
+  (( ${#ranked} > 0 )) || return 1
+  _to_rank_dirs_by_usage "${ranked[@]}"
+}
+
+_to_object_matches() {
+  local kind="$1"
+  shift
+  local -a roots matches
+
+  (( $# > 0 )) || return 2
+  case "$kind" in
+    file)
+      _to_load_roots
+      roots=("${TO_ROOTS[@]}")
+      matches=("${(@f)$(_to_collect_file_parent_matches roots "$*")}")
+      matches=("${(@)matches:#}")
+      (( ${#matches} > 0 )) || return 1
+      printf '%s\n' "${matches[@]}"
+      ;;
+    dir)
+      _to_load_roots
+      roots=("${TO_ROOTS[@]}")
+      matches=("${(@f)$(_to_collect_matches roots "$@")}")
+      matches=("${(@)matches:#}")
+      (( ${#matches} > 0 )) || return 1
+      printf '%s\n' "${matches[@]}"
+      ;;
+    ws)
+      _to_workspace_matches "$*"
+      ;;
+    cargo|npm|py|docker)
+      _to_marker_parent_matches "$kind" "$@"
+      ;;
+    code)
+      _to_code_parent_matches "$@"
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
+_to_jump_to_object() {
+  local kind="$1"
+  shift
+  local label target choose_status
+
+  [[ $# -gt 0 ]] || {
+    print -u2 -- "to: usage: to $kind <query...>"
+    return 2
+  }
+  label="$kind"
+  target="$(_to_choose_match 0 "${(@f)$(_to_object_matches "$kind" "$@")}")"
+  choose_status=$?
+  if (( choose_status == 2 )); then
+    print -u2 -- "to: usage: to $kind <query...>"
+    return 2
+  fi
+  if [[ $choose_status -ne 0 || -z "$target" ]]; then
+    _to_record_search_outcome "Miss"
+    _to_print_no_match_advice "$label" "$@"
+    return 1
+  fi
+  cd "$target" && _to_after_cd "$PWD"
+}
+
 _to_collect_matches_for_mode() {
   local -a search_roots queries unique ranked
   local root dir key roots_ref mode
@@ -2953,6 +3216,14 @@ Usage:
   to aliases                List user aliases
   to repo [query...]        List repos, or jump to a matching Git repository
   to git                    Jump to the nearest parent Git repository
+  to file <name>            Jump to a directory containing a matching file
+  to dir <query...>         Jump to a matching directory
+  to ws <query...>          Jump to a matching workspace
+  to cargo <query...>       Jump to a Rust project by Cargo.toml content
+  to npm <query...>         Jump to a Node project by package.json content
+  to py <query...>          Jump to a Python project by package metadata
+  to docker <query...>      Jump to a Docker project by Docker metadata
+  to code <query...>        Jump to a directory containing matching code text
   to recent                 Choose from recent jumps
   to workspace <name> <dir> Add a workspace alias
   to work <name>            Jump to a workspace
@@ -3029,6 +3300,11 @@ to() {
         return 1
       }
       cd "$target" && _to_after_cd "$PWD"
+      ;;
+    file|dir|ws|cargo|npm|py|docker|code)
+      local object_kind="$1"
+      shift
+      _to_jump_to_object "$object_kind" "$@"
       ;;
     recent)
       target="$(_to_choose_match 0 "${(@f)$(_to_recent_dirs)}")"

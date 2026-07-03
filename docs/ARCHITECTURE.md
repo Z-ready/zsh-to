@@ -21,6 +21,7 @@ query
   -> workspaces
   -> frecency history
   -> SQLite directory/file/repository index
+  -> explicit object adapters (file/dir/ws/package/code)
   -> TSV fallback
   -> live fd/find search
   -> interactive selection when needed
@@ -65,9 +66,10 @@ internal areas:
 3. SQLite schema and migration.
 4. Index collection, refresh, pruning, and query.
 5. Matching and ranking.
-6. Interactive selection.
-7. Watcher and doctor commands.
-8. Public `to` command dispatch.
+6. Object navigation adapters.
+7. Interactive selection.
+8. Watcher and doctor commands.
+9. Public `to` command dispatch.
 
 ## Refactor plan
 

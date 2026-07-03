@@ -21,9 +21,12 @@ After initialization, the zsh function named `to` handles directory jumps:
   to README.md
   to repo ai template
   to git
+  to cargo tokio
+  to code auth
 
 After shell integration, `to` combines frecency history, a SQLite index, and
-confined live search for directories, files, and Git repositories.
+confined live search for directories, files, Git repositories, and developer
+project objects.
 EOF
 }
 
