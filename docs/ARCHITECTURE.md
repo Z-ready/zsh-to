@@ -20,12 +20,12 @@ query
   -> user aliases
   -> workspaces
   -> frecency history
-  -> SQLite or helper query
+  -> SQLite directory/file/repository index
   -> TSV fallback
   -> live fd/find search
   -> interactive selection when needed
   -> cd
-  -> recent/frecency/index bookkeeping
+  -> recent/frecency/index/stat bookkeeping
 ```
 
 ## Persistent state
@@ -39,10 +39,17 @@ By default, all state lives under `~/.config/to`:
 - `workspaces`: text fallback for workspaces.
 - `recent`: text fallback for recent destinations.
 
-The SQLite database also owns the frecency history table:
-`history(path, visits, last_used)`. Successful jumps update one history row.
-Queries use that table before the directory index when `TO_FRECENCY=1`, then
-fall back to index and live discovery if no history score reaches
+The SQLite database also owns frecency and runtime-diagnostic state:
+
+- `history(path, visits, last_used)`: successful jumps update one row.
+- `files(path, name, stem, parent, depth, last_seen)`: file-name cache populated
+  on demand.
+- `stats(key, value)`: last search outcome, hit counters, and last reindex.
+- `dirs.repo` and `dirs.repo_name`: Git repository metadata populated during
+  reindex and live repo fallback.
+
+Queries use history before the directory index when `TO_FRECENCY=1`, then fall
+back to index and live discovery if no history score reaches
 `TO_FRECENCY_THRESHOLD`.
 
 `TO_CONFIG_HOME` can move this state directory.
@@ -54,7 +61,7 @@ Homebrew installation and `eval "$(to init zsh)"` simple, but the file has clear
 internal areas:
 
 1. Config defaults and path expansion.
-2. Root, alias, workspace, recent, and frecency state.
+2. Root, alias, workspace, recent, frecency, and runtime-stat state.
 3. SQLite schema and migration.
 4. Index collection, refresh, pruning, and query.
 5. Matching and ranking.

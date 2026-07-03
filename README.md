@@ -12,9 +12,10 @@ to app backend
 to repo nginx
 ```
 
-`to` combines zoxide-style history with discovery. Frequently and recently
-used directories jump first, while the configured-root index and live fallback
-still find folders and files you have never visited before.
+`to` combines zoxide-style history with developer-focused discovery.
+Frequently and recently used directories jump first, while the configured-root
+index and live fallback still find folders, files, and Git repositories you
+have never visited before.
 
 [Getting started](#getting-started) • [Installation](#installation) •
 [Usage](#usage) • [Configuration](#configuration) •
@@ -386,14 +387,30 @@ to unwork work
 
 ### Git repositories
 
-Jump to an indexed Git repository:
+Jump to an indexed Git repository. Multiple keywords are supported:
 
 ```zsh
 to repo nginx
+to repo ai template
+to repo open ai
 ```
 
-`to` detects `.git` directories during indexing and stores that metadata in
-SQLite, so `to repo <query>` does not need to inspect every candidate live.
+`to` detects `.git` directories during indexing and stores `repo=1` plus the
+repository name in SQLite, so `to repo <query...>` is a fast indexed lookup.
+If the index misses, `to` falls back to a confined `.git` scan under configured
+roots and caches successful repositories.
+
+List recently used repositories:
+
+```zsh
+to repo
+```
+
+Jump from anywhere inside a repository back to its root:
+
+```zsh
+to git
+```
 
 ### Recent destinations
 
@@ -441,14 +458,18 @@ to work work              # jump to a workspace
 to unwork work            # remove a workspace
 to workspaces             # list workspaces
 
+to repo                   # list recent Git repositories
 to repo nginx             # jump to a matching Git repository
+to repo ai template       # multi-keyword repository search
+to git                    # jump to the nearest parent Git repository
 to recent                 # jump from recent destinations
 to ai docker              # use TO_AI_COMMAND, or broad fallback search
 
 to init zsh               # print zsh integration script
 to --reindex              # refresh the SQLite/TSV directory index
 to --watch                # watch roots and reindex after filesystem changes
-to --doctor               # check dependencies and config
+to --doctor               # grouped diagnostics and runtime statistics
+to --doctor --verbose     # include low-level tool paths and AI hooks
 to --version              # show version
 ```
 
@@ -532,6 +553,11 @@ only if you want broader results:
 ```zsh
 TO_SEARCH_PATH_FRAGMENTS=1
 ```
+
+Repository searches have their own indexed path. `to repo <query...>` matches
+all query words against repository names and paths, then orders candidates by
+frecency, lexical fit, and path depth. `to repo` with no query prints recent
+repositories sorted by frecency.
 
 ## Configuration
 
@@ -635,8 +661,8 @@ Normal jumps are history-first, then index-first:
 ```text
 query -> frecency history -> validate path -> cd
       -> SQLite index -> validate path -> cd
-      -> fallback to fd/find on miss or stale path
-      -> write fresh result back to SQLite
+      -> live fd/find search under configured roots
+      -> cache result in SQLite and history
 ```
 
 Fallback search runs only inside the configured roots, never across the whole
@@ -660,9 +686,11 @@ The SQLite index stores:
 
 ```sql
 dirs(id, path, name, parent, depth, is_git, last_seen, last_used, hit_count)
+dirs also records repo and repo_name for Git repository navigation
 tokens(token, dir_id)
 files(path, name, stem, parent, depth, last_seen)
 history(path, visits, last_used)
+stats(key, value)
 roots(path, mtime, config_key, last_indexed)
 aliases(name, path)
 workspaces(name, path)
@@ -740,6 +768,12 @@ Check the environment:
 ```zsh
 to --doctor
 ```
+
+`to --doctor` is grouped into Search, Discovery, Performance, and Statistics.
+It shows whether SQLite and frecency are active, how many roots are configured,
+index/cache sizes, time since the last reindex, the most used root, cache hit
+rate, and the outcome of the last search. Use `to --doctor --verbose` to show
+low-level tool paths, helper detection, and optional AI hooks.
 
 Refresh the index:
 

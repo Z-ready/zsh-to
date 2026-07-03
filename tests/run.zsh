@@ -65,6 +65,9 @@ mkdir -p \
   "$SEARCH_ROOT/unicode/naïve-café" \
   "$SEARCH_ROOT/workspace-school" \
   "$SEARCH_ROOT/repos/nginx/.git" \
+  "$SEARCH_ROOT/repos/ai-template/.git" \
+  "$SEARCH_ROOT/repos/openai-api/.git" \
+  "$SEARCH_ROOT/repos/openai-api/src/plugin/test" \
   "$SEARCH_ROOT/history/hot-target" \
   "$SEARCH_ROOT/history/cold-target" \
   "$SEARCH_ROOT/history/hot-file" \
@@ -102,7 +105,7 @@ assert_eq "$TO_AUTOWATCH" "0" "invalid config autowatch falls back to default"
 assert_eq "$TO_AUTO_ADD_ROOTS" "0" "invalid config auto add roots falls back to default"
 assert_eq "$TO_FRECENCY" "1" "invalid config frecency falls back to default"
 assert_eq "$TO_FRECENCY_THRESHOLD" "1" "invalid config frecency threshold falls back to default"
-assert_eq "$(to --version)" "to 1.2.2" "plugin version output"
+assert_eq "$(to --version)" "to 1.3.0" "plugin version output"
 assert_eq "$(to roots)" "${HOME_DIR:A}" "source ignores stale in-shell roots"
 assert_eq "$TO_WATCH_DEBOUNCE" "2" "watch debounce default"
 assert_eq "$TO_AI_RANK_COMMAND" "" "ai rank command default"
@@ -494,9 +497,26 @@ cd "$ROOT" || fail "could not reset cwd"
 to repo nginx
 assert_path_eq "$PWD" "$SEARCH_ROOT/repos/nginx" "git repo jump"
 if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]]; then
-  repo_match="$(_to_index_query git nginx | head -n 1)"
+  repo_count="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from dirs where repo = 1 and repo_name in ('nginx', 'ai-template', 'openai-api');")"
+  assert_eq "$repo_count" "3" "reindex records repo metadata"
+  repo_match="$(_to_repo_query_sqlite nginx | head -n 1)"
   assert_path_eq "$repo_match" "$SEARCH_ROOT/repos/nginx" "git repo query uses token index"
+  ai_template_match="$(_to_repo_query_sqlite ai template | head -n 1)"
+  assert_path_eq "$ai_template_match" "$SEARCH_ROOT/repos/ai-template" "repo query supports multiple keywords"
+  now="$(_to_now)"
+  sqlite3 "$TO_INDEX_FILE" >/dev/null <<SQL
+insert or replace into history(path, visits, last_used) values($(sql_quote "${SEARCH_ROOT:A}/repos/openai-api"), 5, $now);
+insert or replace into history(path, visits, last_used) values($(sql_quote "${SEARCH_ROOT:A}/repos/ai-template"), 1, $(( now - 1209600 )));
+SQL
+  repo_list="$(to repo | head -n 1)"
+  assert_path_eq "$repo_list" "$SEARCH_ROOT/repos/openai-api" "repo without query lists frecent repositories first"
 fi
+cd "$ROOT" || fail "could not reset cwd"
+to repo ai template
+assert_path_eq "$PWD" "$SEARCH_ROOT/repos/ai-template" "repo command jumps with multiple keywords"
+cd "$SEARCH_ROOT/repos/openai-api/src/plugin/test" || fail "could not enter nested repo fixture"
+to git
+assert_path_eq "$PWD" "$SEARCH_ROOT/repos/openai-api" "to git jumps to nearest repo root"
 missing_repo_output="$(to repo missing-repo 2>&1 >/dev/null)"
 [[ "$missing_repo_output" == *"no matching Git repository"* ]] || fail "missing repo did not explain failure: $missing_repo_output"
 ok "missing git repo reports no match"
@@ -626,18 +646,31 @@ fi
 
 doctor_output="$(to --doctor)"
 [[ "$doctor_output" == *"to config: $CONFIG/config.zsh"* ]] || fail "doctor config path"
+[[ "$doctor_output" == *"Search"* ]] || fail "doctor search category"
+[[ "$doctor_output" == *"Discovery"* ]] || fail "doctor discovery category"
+[[ "$doctor_output" == *"Performance"* ]] || fail "doctor performance category"
+[[ "$doctor_output" == *"Statistics"* ]] || fail "doctor statistics category"
 [[ "$doctor_output" == *"max depth: 8"* ]] || fail "doctor max depth"
-[[ "$doctor_output" == *"path fragment search: 0"* ]] || fail "doctor path fragment search"
-[[ "$doctor_output" == *"follow symlinks: 0"* ]] || fail "doctor follow symlinks"
-[[ "$doctor_output" == *"watch debounce: 2"* ]] || fail "doctor watch debounce"
-[[ "$doctor_output" == *"autowatch: 0"* ]] || fail "doctor autowatch"
-[[ "$doctor_output" == *"auto add roots: 0"* ]] || fail "doctor auto add roots"
-[[ "$doctor_output" == *"frecency: 1"* ]] || fail "doctor frecency"
+[[ "$doctor_output" == *"path fragment search: off"* ]] || fail "doctor path fragment search"
+[[ "$doctor_output" == *"follow symlinks: off"* ]] || fail "doctor follow symlinks"
+[[ "$doctor_output" == *"watch debounce: 2s"* ]] || fail "doctor watch debounce"
+[[ "$doctor_output" == *"autowatch: off"* ]] || fail "doctor autowatch"
+[[ "$doctor_output" == *"auto add roots: off"* ]] || fail "doctor auto add roots"
+[[ "$doctor_output" == *"frecency: on"* ]] || fail "doctor frecency"
 [[ "$doctor_output" == *"frecency threshold: 1"* ]] || fail "doctor frecency threshold"
-[[ "$doctor_output" == *"discovery mode: home-first"* ]] || fail "doctor discovery mode"
+[[ "$doctor_output" == *"mode: home-first"* ]] || fail "doctor discovery mode"
 [[ "$doctor_output" == *"watcher:"* ]] || fail "doctor watcher status"
-[[ "$doctor_output" == *"sqlite3:"* ]] || fail "doctor sqlite status"
-[[ "$doctor_output" == *"ai rank command:"* ]] || fail "doctor ai rank command status"
+[[ "$doctor_output" == *"sqlite entries:"* ]] || fail "doctor sqlite entry count"
+[[ "$doctor_output" == *"sqlite dirs:"* ]] || fail "doctor sqlite dir count"
+[[ "$doctor_output" == *"directory history:"* ]] || fail "doctor history count"
+[[ "$doctor_output" == *"file cache:"* ]] || fail "doctor file cache count"
+[[ "$doctor_output" == *"cache hit rate:"* ]] || fail "doctor cache hit rate"
+[[ "$doctor_output" == *"last search:"* ]] || fail "doctor last search"
+[[ "$doctor_output" != *"ai rank command:"* ]] || fail "doctor default output should hide ai rank command"
+doctor_verbose_output="$(to --doctor --verbose)"
+[[ "$doctor_verbose_output" == *"Verbose"* ]] || fail "doctor verbose category"
+[[ "$doctor_verbose_output" == *"sqlite3 path:"* ]] || fail "doctor verbose sqlite path"
+[[ "$doctor_verbose_output" == *"ai rank command:"* ]] || fail "doctor verbose ai rank command status"
 ok "doctor output"
 
 bin_doctor_output="$("$TEST_DIR/../bin/to" --doctor)"
@@ -645,7 +678,7 @@ bin_doctor_output="$("$TEST_DIR/../bin/to" --doctor)"
 [[ "$bin_doctor_output" == *"max depth: 8"* ]] || fail "bin wrapper doctor config defaults"
 ok "bin wrapper runs doctor before shell integration"
 
-assert_eq "$("$TEST_DIR/../bin/to" --version)" "to 1.2.2" "bin wrapper version output"
+assert_eq "$("$TEST_DIR/../bin/to" --version)" "to 1.3.0" "bin wrapper version output"
 
 bin_roots_output="$("$TEST_DIR/../bin/to" roots)"
 assert_eq "$bin_roots_output" "${HOME_DIR:A}" "bin wrapper runs roots before shell integration"

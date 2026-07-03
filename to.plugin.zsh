@@ -22,7 +22,7 @@ typeset -g TO_FRECENCY_THRESHOLD
 typeset -g _TO_SQLITE_SCHEMA_READY_FILE
 typeset -g _TO_AUTOWATCH_PID
 typeset -g _TO_AUTOWATCH_PID_FILE
-typeset -r _TO_VERSION="1.2.2"
+typeset -r _TO_VERSION="1.3.0"
 
 _to_apply_positive_int_default() {
   local name="$1"
@@ -231,16 +231,22 @@ _to_dir_depth() {
 _to_dir_index_row() {
   local dir="${1:A}"
   local now="${2:-$(_to_now)}"
-  local name parent depth is_git
+  local name parent depth is_git repo repo_name
 
   [[ -d "$dir" ]] || return 1
   name="${dir:t}"
   parent="${dir:h}"
   depth="$(_to_dir_depth "$dir")"
   is_git=0
-  [[ -d "$dir/.git" ]] && is_git=1
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$dir" "$name" "${(L)name}" "$parent" "$depth" "$is_git" "$now" 0 0
+  repo=0
+  repo_name=""
+  if [[ -d "$dir/.git" || -f "$dir/.git" ]]; then
+    is_git=1
+    repo=1
+    repo_name="$name"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$dir" "$name" "${(L)name}" "$parent" "$depth" "$is_git" "$repo" "${(L)repo_name}" "$now" 0 0
 }
 
 _to_file_stem() {
@@ -383,7 +389,7 @@ _to_index_collect_tokens_tsv() {
 }
 
 _to_index_ensure_sqlite_schema() {
-  local has_id has_parent has_depth has_last_seen has_last_used has_hit_count has_token_dir_id has_token_path has_config_key has_files has_history
+  local has_id has_parent has_depth has_last_seen has_last_used has_hit_count has_repo has_repo_name has_token_dir_id has_token_path has_config_key has_files has_history has_stats
 
   command -v sqlite3 >/dev/null 2>&1 || return 1
   if [[ "$_TO_SQLITE_SCHEMA_READY_FILE" == "$TO_INDEX_FILE" && -r "$TO_INDEX_FILE" ]]; then
@@ -400,6 +406,8 @@ create table if not exists dirs(
   parent text not null default '',
   depth integer not null default 0,
   is_git integer not null default 0,
+  repo integer not null default 0,
+  repo_name text not null default '',
   last_seen integer not null default 0,
   last_used integer not null default 0,
   hit_count integer not null default 0
@@ -442,10 +450,9 @@ create table if not exists files(
   depth integer not null default 0,
   last_seen integer not null default 0
 );
-create table if not exists history(
-  path text primary key,
-  visits integer not null default 0,
-  last_used integer not null default 0
+create table if not exists stats(
+  key text primary key,
+  value text not null default ''
 );
 SQL
   has_id="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from pragma_table_info('dirs') where name = 'id';" 2>/dev/null)"
@@ -454,11 +461,14 @@ SQL
   has_last_seen="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from pragma_table_info('dirs') where name = 'last_seen';" 2>/dev/null)"
   has_last_used="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from pragma_table_info('dirs') where name = 'last_used';" 2>/dev/null)"
   has_hit_count="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from pragma_table_info('dirs') where name = 'hit_count';" 2>/dev/null)"
+  has_repo="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from pragma_table_info('dirs') where name = 'repo';" 2>/dev/null)"
+  has_repo_name="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from pragma_table_info('dirs') where name = 'repo_name';" 2>/dev/null)"
   has_token_dir_id="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from pragma_table_info('tokens') where name = 'dir_id';" 2>/dev/null)"
   has_token_path="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from pragma_table_info('tokens') where name = 'path';" 2>/dev/null)"
   has_config_key="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from pragma_table_info('roots') where name = 'config_key';" 2>/dev/null)"
   has_files="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from sqlite_master where type = 'table' and name = 'files';" 2>/dev/null)"
   has_history="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from sqlite_master where type = 'table' and name = 'history';" 2>/dev/null)"
+  has_stats="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from sqlite_master where type = 'table' and name = 'stats';" 2>/dev/null)"
 
   if [[ "$has_id" != 1 ]]; then
     [[ "$has_parent" == 1 ]] || sqlite3 "$TO_INDEX_FILE" "alter table dirs add column parent text not null default '';" >/dev/null 2>/dev/null
@@ -476,11 +486,13 @@ create table dirs(
   parent text not null default '',
   depth integer not null default 0,
   is_git integer not null default 0,
+  repo integer not null default 0,
+  repo_name text not null default '',
   last_seen integer not null default 0,
   last_used integer not null default 0,
   hit_count integer not null default 0
 );
-insert into dirs(path, name, lower_name, parent, depth, is_git, last_seen, last_used, hit_count)
+insert into dirs(path, name, lower_name, parent, depth, is_git, repo, repo_name, last_seen, last_used, hit_count)
 select
   path,
   name,
@@ -488,6 +500,8 @@ select
   coalesce(parent, rtrim(substr(path, 1, length(path) - length(name)), '/')),
   coalesce(depth, length(path) - length(replace(path, '/', ''))),
   coalesce(is_git, 0),
+  coalesce(is_git, 0),
+  case when coalesce(is_git, 0) = 1 then lower_name else '' end,
   coalesce(last_seen, 0),
   coalesce(last_used, 0),
   coalesce(hit_count, 0)
@@ -506,6 +520,8 @@ SQL
   [[ "$has_last_seen" == 1 ]] || sqlite3 "$TO_INDEX_FILE" "alter table dirs add column last_seen integer not null default 0;" >/dev/null 2>/dev/null
   [[ "$has_last_used" == 1 ]] || sqlite3 "$TO_INDEX_FILE" "alter table dirs add column last_used integer not null default 0;" >/dev/null 2>/dev/null
   [[ "$has_hit_count" == 1 ]] || sqlite3 "$TO_INDEX_FILE" "alter table dirs add column hit_count integer not null default 0;" >/dev/null 2>/dev/null
+  [[ "$has_repo" == 1 ]] || sqlite3 "$TO_INDEX_FILE" "alter table dirs add column repo integer not null default 0;" >/dev/null 2>/dev/null
+  [[ "$has_repo_name" == 1 ]] || sqlite3 "$TO_INDEX_FILE" "alter table dirs add column repo_name text not null default '';" >/dev/null 2>/dev/null
   [[ "$has_config_key" == 1 ]] || sqlite3 "$TO_INDEX_FILE" "alter table roots add column config_key text not null default '';" >/dev/null 2>/dev/null
   if [[ "$has_files" != 1 ]]; then
     sqlite3 "$TO_INDEX_FILE" >/dev/null 2>/dev/null <<SQL || return 1
@@ -523,6 +539,9 @@ SQL
   fi
   if [[ "$has_history" != 1 ]]; then
     sqlite3 "$TO_INDEX_FILE" "create table history(path text primary key, visits integer not null default 0, last_used integer not null default 0);" >/dev/null 2>/dev/null || return 1
+  fi
+  if [[ "$has_stats" != 1 ]]; then
+    sqlite3 "$TO_INDEX_FILE" "create table stats(key text primary key, value text not null default '');" >/dev/null 2>/dev/null || return 1
   fi
 
   if [[ "$has_token_dir_id" != 1 ]]; then
@@ -548,8 +567,11 @@ SQL
   sqlite3 "$TO_INDEX_FILE" >/dev/null 2>/dev/null <<SQL || return 1
 update dirs set parent = rtrim(substr(path, 1, length(path) - length(name)), '/') where parent = '';
 update dirs set depth = length(path) - length(replace(path, '/', '')) where depth = 0;
+update dirs set repo = 1, repo_name = lower_name where is_git = 1 and (repo = 0 or repo_name = '');
 create index if not exists idx_dirs_lower_name on dirs(lower_name);
 create index if not exists idx_dirs_is_git on dirs(is_git);
+create index if not exists idx_dirs_repo on dirs(repo);
+create index if not exists idx_dirs_repo_name on dirs(repo_name);
 create index if not exists idx_dirs_depth on dirs(depth);
 create index if not exists idx_dirs_last_used on dirs(last_used);
 create index if not exists idx_dirs_path on dirs(path);
@@ -562,6 +584,7 @@ create index if not exists idx_files_lower_stem on files(lower_stem);
 create index if not exists idx_files_parent on files(parent);
 create index if not exists idx_history_last_used on history(last_used);
 create index if not exists idx_history_path on history(path);
+create index if not exists idx_stats_key on stats(key);
 SQL
   _TO_SQLITE_SCHEMA_READY_FILE="$TO_INDEX_FILE"
 }
@@ -794,6 +817,57 @@ delete from history
 where $(_to_frecency_score_sql "$now") < $TO_FRECENCY_THRESHOLD
   and last_used < $(( now - 604800 ));
 SQL
+}
+
+_to_stat_set() {
+  local key="$1"
+  local value="$2"
+
+  command -v sqlite3 >/dev/null 2>&1 || return 0
+  _to_index_ensure_sqlite_schema >/dev/null 2>&1 || return 0
+  sqlite3 "$TO_INDEX_FILE" "insert or replace into stats(key, value) values($(_to_sql_quote "$key"), $(_to_sql_quote "$value"));" >/dev/null 2>/dev/null
+}
+
+_to_stat_increment() {
+  local key="$1"
+
+  command -v sqlite3 >/dev/null 2>&1 || return 0
+  _to_index_ensure_sqlite_schema >/dev/null 2>&1 || return 0
+  sqlite3 "$TO_INDEX_FILE" "insert into stats(key, value) values($(_to_sql_quote "$key"), '1') on conflict(key) do update set value = cast(stats.value as integer) + 1;" >/dev/null 2>/dev/null
+}
+
+_to_record_search_outcome() {
+  local outcome="$1"
+
+  [[ "$outcome" != "Miss" || -r "$TO_INDEX_FILE" ]] || return 0
+  _to_stat_set last_search "$outcome"
+  _to_stat_increment search_total
+  case "$outcome" in
+    *Hit|Repo\ Index|File\ Cache)
+      _to_stat_increment search_hit
+      ;;
+  esac
+}
+
+_to_stat_get() {
+  local key="$1"
+  local fallback="${2:-0}"
+  local value
+
+  command -v sqlite3 >/dev/null 2>&1 || {
+    print -r -- "$fallback"
+    return
+  }
+  [[ -r "$TO_INDEX_FILE" ]] || {
+    print -r -- "$fallback"
+    return
+  }
+  _to_index_ensure_sqlite_schema >/dev/null 2>&1 || {
+    print -r -- "$fallback"
+    return
+  }
+  value="$(sqlite3 -noheader "$TO_INDEX_FILE" "select value from stats where key = $(_to_sql_quote "$key");" 2>/dev/null)"
+  [[ -n "$value" ]] && print -r -- "$value" || print -r -- "$fallback"
 }
 
 _to_dir_is_under_roots_ref() {
@@ -1136,6 +1210,15 @@ create table if not exists recent(
   path text primary key,
   last_used integer not null
 );
+create table if not exists history(
+  path text primary key,
+  visits integer not null default 0,
+  last_used integer not null default 0
+);
+create table if not exists stats(
+  key text primary key,
+  value text not null default ''
+);
 create table if not exists files(
   path text primary key,
   name text not null,
@@ -1154,6 +1237,8 @@ create table dirs(
   parent text not null,
   depth integer not null,
   is_git integer not null,
+  repo integer not null,
+  repo_name text not null,
   last_seen integer not null,
   last_used integer not null default 0,
   hit_count integer not null default 0
@@ -1170,6 +1255,8 @@ create table __to_import_dirs(
   parent text not null,
   depth integer not null,
   is_git integer not null,
+  repo integer not null,
+  repo_name text not null,
   last_seen integer not null,
   last_used integer not null default 0,
   hit_count integer not null default 0
@@ -1183,8 +1270,8 @@ begin transaction;
 .mode tabs
 .import ${tmp} __to_import_dirs
 .import ${tokens_tmp} __to_import_tokens
-insert into dirs(path, name, lower_name, parent, depth, is_git, last_seen, last_used, hit_count)
-select path, name, lower_name, parent, depth, is_git, last_seen, last_used, hit_count
+insert into dirs(path, name, lower_name, parent, depth, is_git, repo, repo_name, last_seen, last_used, hit_count)
+select path, name, lower_name, parent, depth, is_git, repo, repo_name, last_seen, last_used, hit_count
 from __to_import_dirs;
 insert or ignore into tokens(token, dir_id)
 select t.token, d.id
@@ -1195,6 +1282,8 @@ drop table __to_import_dirs;
 drop table __to_import_tokens;
 create index idx_dirs_lower_name on dirs(lower_name);
 create index idx_dirs_is_git on dirs(is_git);
+create index idx_dirs_repo on dirs(repo);
+create index idx_dirs_repo_name on dirs(repo_name);
 create index idx_dirs_depth on dirs(depth);
 create index idx_dirs_last_used on dirs(last_used);
 create index idx_dirs_path on dirs(path);
@@ -1205,6 +1294,7 @@ create index idx_files_lower_stem on files(lower_stem);
 create index idx_files_parent on files(parent);
 create index idx_history_last_used on history(last_used);
 create index idx_history_path on history(path);
+create index idx_stats_key on stats(key);
 pragma journal_mode=delete;
 SQL
   _TO_SQLITE_SCHEMA_READY_FILE="$TO_INDEX_FILE"
@@ -1250,6 +1340,8 @@ create table __to_import_dirs(
   parent text not null,
   depth integer not null,
   is_git integer not null,
+  repo integer not null,
+  repo_name text not null,
   last_seen integer not null,
   last_used integer not null default 0,
   hit_count integer not null default 0
@@ -1273,7 +1365,7 @@ where dir_id in (
 delete from dirs
 where (path = $(_to_sql_quote "$root") or path like $(_to_sql_quote "$root_like"))
   and path not in (select path from __to_import_dirs);
-insert or replace into dirs(path, name, lower_name, parent, depth, is_git, last_seen, last_used, hit_count)
+insert or replace into dirs(path, name, lower_name, parent, depth, is_git, repo, repo_name, last_seen, last_used, hit_count)
 select
   i.path,
   i.name,
@@ -1281,6 +1373,8 @@ select
   i.parent,
   i.depth,
   i.is_git,
+  i.repo,
+  i.repo_name,
   i.last_seen,
   coalesce((select d.last_used from dirs d where d.path = i.path), 0),
   coalesce((select d.hit_count from dirs d where d.path = i.path), 0)
@@ -1369,6 +1463,7 @@ _to_index_reindex_incremental_sqlite() {
   done
 
   _to_index_prune_removed_roots_sqlite
+  _to_stat_set last_reindex "$now"
   print -r -- "to: indexed $changed root(s), skipped $skipped fresh root(s) into $TO_INDEX_FILE"
 }
 
@@ -1419,7 +1514,7 @@ _to_index_query_sqlite() {
       ;;
     git)
       [[ -n "$token_list" ]] || return 1
-      sql="select d.path from dirs d join tokens t on t.dir_id = d.id where d.is_git = 1 and t.token in ($token_list) group by d.path having count(distinct t.token) = ${#queries} order by case when d.lower_name = $(_to_sql_quote "$first") then 0 else 1 end, d.last_used desc, d.hit_count desc, d.depth asc, length(d.path), d.path limit 50;"
+      sql="select d.path from dirs d join tokens t on t.dir_id = d.id where d.repo = 1 and t.token in ($token_list) group by d.path having count(distinct t.token) = ${#queries} order by case when d.repo_name = $(_to_sql_quote "$first") then 0 else 1 end, d.last_used desc, d.hit_count desc, d.depth asc, length(d.path), d.path limit 50;"
       ;;
     *)
       return 1
@@ -1433,19 +1528,29 @@ _to_index_query_tsv() {
   local mode="$1"
   shift
   local -a queries
-  local query line row_path name lower_name parent depth is_git last_seen last_used hit_count
+  local query line row_path name lower_name parent depth is_git repo repo_name last_seen last_used hit_count
   local path_l ok part
 
   [[ -r "$TO_INDEX_TSV_FILE" ]] || return 1
   queries=("${(@L)@}")
   query="${(j: :)queries}"
 
-  while IFS=$'\t' read -r row_path name lower_name parent depth is_git last_seen last_used hit_count; do
+  while IFS=$'\t' read -r row_path name lower_name parent depth is_git repo repo_name last_seen last_used hit_count; do
     [[ -d "$row_path" ]] || continue
-    if [[ -z "$is_git" ]]; then
+    if [[ -z "$last_used" && -z "$hit_count" ]]; then
+      hit_count="$last_seen"
+      last_used="$repo_name"
+      last_seen="$repo"
+      repo="$is_git"
+      repo_name=""
+      [[ "$repo" == 1 ]] && repo_name="$lower_name"
+    fi
+    if [[ -z "$repo" ]]; then
       is_git="$parent"
       parent="${row_path:h}"
       depth="$(_to_dir_depth "$row_path")"
+      repo="$is_git"
+      repo_name="$lower_name"
     fi
     path_l="${(L)row_path}"
     case "$mode" in
@@ -1480,7 +1585,7 @@ _to_index_query_tsv() {
             break
           fi
         done
-        [[ "$is_git" == 1 && "$ok" == 1 ]] && print -r -- "$row_path"
+        [[ "${repo:-$is_git}" == 1 && "$ok" == 1 ]] && print -r -- "$row_path"
         ;;
     esac
   done < "$TO_INDEX_TSV_FILE"
@@ -1641,7 +1746,7 @@ _to_index_query() {
 _to_index_upsert_dir_sqlite() {
   local dir="${1:A}"
   local now="$(_to_now)"
-  local name parent depth is_git
+  local name parent depth is_git repo repo_name
   local -a tokens token_values
   local token values_sql
 
@@ -1651,7 +1756,13 @@ _to_index_upsert_dir_sqlite() {
   parent="${dir:h}"
   depth="$(_to_dir_depth "$dir")"
   is_git=0
-  [[ -d "$dir/.git" ]] && is_git=1
+  repo=0
+  repo_name=""
+  if [[ -d "$dir/.git" || -f "$dir/.git" ]]; then
+    is_git=1
+    repo=1
+    repo_name="${(L)name}"
+  fi
   tokens=("${(@f)$(_to_dir_tokens "$dir")}")
   for token in "${tokens[@]}"; do
     [[ -n "$token" ]] || continue
@@ -1660,7 +1771,7 @@ _to_index_upsert_dir_sqlite() {
   values_sql="${(j:,:)token_values}"
 
   sqlite3 "$TO_INDEX_FILE" >/dev/null 2>/dev/null <<SQL
-insert into dirs(path, name, lower_name, parent, depth, is_git, last_seen, last_used, hit_count)
+insert into dirs(path, name, lower_name, parent, depth, is_git, repo, repo_name, last_seen, last_used, hit_count)
 values(
   $(_to_sql_quote "$dir"),
   $(_to_sql_quote "$name"),
@@ -1668,6 +1779,8 @@ values(
   $(_to_sql_quote "$parent"),
   $depth,
   $is_git,
+  $repo,
+  $(_to_sql_quote "$repo_name"),
   $now,
   $now,
   coalesce((select hit_count from dirs where path = $(_to_sql_quote "$dir")), 0) + 1
@@ -1678,6 +1791,8 @@ on conflict(path) do update set
   parent = excluded.parent,
   depth = excluded.depth,
   is_git = excluded.is_git,
+  repo = excluded.repo,
+  repo_name = excluded.repo_name,
   last_seen = excluded.last_seen,
   last_used = excluded.last_used,
   hit_count = dirs.hit_count + 1;
@@ -1798,6 +1913,7 @@ _to_first_exact_match() {
   matches=("${(@f)$(_to_index_query exact "$query")}")
   matches=("${(@)matches:#}")
   if (( ${#matches} > 0 )); then
+    _to_record_search_outcome "SQLite Hit"
     print -r -- "${matches[1]:A}"
     return
   fi
@@ -1813,6 +1929,7 @@ _to_first_exact_match() {
         (( ${#match} < ${#best} )) && best="$match"
       done
       print -r -- "$best"
+      _to_record_search_outcome "Filesystem Fallback"
       return
     fi
   done
@@ -2062,6 +2179,7 @@ _to_collect_file_parent_matches() {
   cached=("${(@f)$(_to_index_query_files_sqlite "$query")}")
   cached=("${(@)cached:#}")
   if (( ${#cached} > 0 )); then
+    _to_record_search_outcome "File Cache"
     ranked=("${(@f)$(_to_rank_dirs_by_usage "${cached[@]}")}")
     printf '%s\n' "${ranked[@]}"
     return
@@ -2086,6 +2204,7 @@ _to_collect_file_parent_matches() {
   done
 
   (( ${#parents} > 0 )) || return 1
+  _to_record_search_outcome "Filesystem Fallback"
   ranked=("${(@f)$(_to_rank_dirs_by_usage "${parents[@]}")}")
   printf '%s\n' "${ranked[@]}"
 }
@@ -2167,6 +2286,7 @@ _to_collect_matches() {
   matches=("${(@f)$(_to_frecency_query_sqlite "$roots_ref" "${queries[@]}")}")
   matches=("${(@)matches:#}")
   if (( ${#matches} > 0 )); then
+    _to_record_search_outcome "Frecency Hit"
     printf '%s\n' "${matches[@]}"
     return
   fi
@@ -2175,6 +2295,7 @@ _to_collect_matches() {
     matches=("${(@f)$(_to_index_query exact "${queries[@]}")}")
     matches=("${(@)matches:#}")
     if (( ${#matches} > 0 )); then
+      _to_record_search_outcome "SQLite Hit"
       printf '%s\n' "${matches[@]}"
       return
     fi
@@ -2184,6 +2305,7 @@ _to_collect_matches() {
     matches=("${(@f)$(_to_collect_matches_for_mode "$roots_ref" exact "${queries[@]}")}")
     matches=("${(@)matches:#}")
     if (( ${#matches} > 0 )); then
+      _to_record_search_outcome "Filesystem Fallback"
       printf '%s\n' "${matches[@]}"
       return
     fi
@@ -2200,6 +2322,7 @@ _to_collect_matches() {
     matches=("${(@f)$(_to_index_query path "${queries[@]}")}")
     matches=("${(@)matches:#}")
     if (( ${#matches} > 0 )); then
+      _to_record_search_outcome "SQLite Hit"
       printf '%s\n' "${(@f)$(_to_prune_descendant_matches "${matches[@]}")}"
       return
     fi
@@ -2207,6 +2330,7 @@ _to_collect_matches() {
     matches=("${(@f)$(_to_collect_matches_for_mode "$roots_ref" path "${queries[@]}")}")
     matches=("${(@)matches:#}")
     if (( ${#matches} > 0 )); then
+      _to_record_search_outcome "Filesystem Fallback"
       printf '%s\n' "${matches[@]}"
       return
     fi
@@ -2220,11 +2344,17 @@ _to_collect_matches() {
     fi
     matches=("${(@)matches:#}")
     if (( ${#matches} > 0 )); then
+      _to_record_search_outcome "SQLite Hit"
       printf '%s\n' "${(@f)$(_to_prune_descendant_matches "${matches[@]}")}"
       return
     fi
 
-    _to_collect_matches_for_mode "$roots_ref" broad "${queries[@]}"
+    matches=("${(@f)$(_to_collect_matches_for_mode "$roots_ref" broad "${queries[@]}")}")
+    matches=("${(@)matches:#}")
+    if (( ${#matches} > 0 )); then
+      _to_record_search_outcome "Filesystem Fallback"
+      printf '%s\n' "${matches[@]}"
+    fi
   fi
 }
 
@@ -2314,6 +2444,7 @@ _to_resolve() {
     if [[ "$force_interactive" != 1 && "$queries[1]" != */* ]]; then
       exact_target="$(_to_frecency_query_sqlite roots "$queries[1]" | head -n 1)"
       if [[ -n "$exact_target" ]]; then
+        _to_record_search_outcome "Frecency Hit"
         print -r -- "$exact_target"
         return
       fi
@@ -2464,54 +2595,151 @@ _to_autowatch_start() {
   print -r -- "$_TO_AUTOWATCH_PID" > "$_TO_AUTOWATCH_PID_FILE" 2>/dev/null || true
 }
 
+_to_on_off() {
+  [[ "${1:-0}" == 1 ]] && print -r -- "on" || print -r -- "off"
+}
+
+_to_command_enabled() {
+  command -v "${1:-}" >/dev/null 2>&1 && print -r -- "enabled" || print -r -- "disabled"
+}
+
+_to_sqlite_count() {
+  local table="${1:-}"
+
+  [[ -n "$table" ]] || {
+    print -r -- 0
+    return
+  }
+  command -v sqlite3 >/dev/null 2>&1 || {
+    print -r -- 0
+    return
+  }
+  [[ -r "$TO_INDEX_FILE" ]] || {
+    print -r -- 0
+    return
+  }
+  _to_index_ensure_sqlite_schema >/dev/null 2>&1 || {
+    print -r -- 0
+    return
+  }
+  sqlite3 -noheader "$TO_INDEX_FILE" "select count(*) from $table;" 2>/dev/null || print -r -- 0
+}
+
+_to_time_ago() {
+  local then="${1:-0}"
+  local now delta
+
+  [[ "$then" == <-> && "$then" -gt 0 ]] || {
+    print -r -- "never"
+    return
+  }
+  now="$(_to_now)"
+  delta=$(( now - then ))
+  (( delta < 60 )) && {
+    print -r -- "${delta}s ago"
+    return
+  }
+  (( delta < 3600 )) && {
+    print -r -- "$(( delta / 60 ))m ago"
+    return
+  }
+  (( delta < 86400 )) && {
+    print -r -- "$(( delta / 3600 ))h ago"
+    return
+  }
+  print -r -- "$(( delta / 86400 ))d ago"
+}
+
+_to_hit_rate() {
+  local total="$(_to_stat_get search_total 0)"
+  local hits="$(_to_stat_get search_hit 0)"
+
+  (( total > 0 )) || {
+    print -r -- "n/a"
+    return
+  }
+  print -r -- "$(( hits * 100 / total ))%"
+}
+
+_to_sqlite_total_entries() {
+  local dirs="$(_to_sqlite_count dirs)"
+  local files="$(_to_sqlite_count files)"
+  local history="$(_to_sqlite_count history)"
+
+  print -r -- "$(( ${dirs:-0} + ${files:-0} + ${history:-0} ))"
+}
+
+_to_most_used_root() {
+  local root best_root count best_count=0
+
+  _to_load_roots
+  for root in "${TO_ROOTS[@]}"; do
+    count=0
+    if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]]; then
+      count="$(sqlite3 -noheader "$TO_INDEX_FILE" "select coalesce(sum(visits), 0) from history where path = $(_to_sql_quote "${root:A}") or path like $(_to_sql_quote "${root:A}/%");" 2>/dev/null)"
+    fi
+    if (( ${count:-0} > best_count )); then
+      best_count="$count"
+      best_root="${root:A}"
+    fi
+  done
+
+  [[ -n "$best_root" ]] && print -r -- "$best_root" || print -r -- "n/a"
+}
+
 _to_doctor() {
+  local verbose=0
+  local sqlite_status watcher_status roots_count last_reindex
+
+  [[ "${1:-}" == "--verbose" || "${1:-}" == "-v" ]] && verbose=1
+  _to_load_roots
+  roots_count="${#TO_ROOTS}"
+  command -v sqlite3 >/dev/null 2>&1 && sqlite_status="enabled" || sqlite_status="disabled, using TSV fallback"
+  _to_watch_backend >/dev/null 2>&1 && watcher_status="available ($(_to_watch_backend))" || watcher_status="unavailable"
+  last_reindex="$(_to_stat_get last_reindex 0)"
+
   print -r -- "to config: $TO_CONFIG_FILE"
   print -r -- "to roots:  $TO_ROOTS_FILE"
   print -r -- "to index:  $TO_INDEX_FILE"
-  if command -v fd >/dev/null 2>&1; then
-    print -r -- "fd: yes ($(command -v fd))"
-  else
-    print -r -- "fd: no, using find fallback"
-  fi
-  if command -v fzf >/dev/null 2>&1; then
-    print -r -- "fzf: yes ($(command -v fzf))"
-  else
-    print -r -- "fzf: no, using numbered selection"
-  fi
-  if command -v sqlite3 >/dev/null 2>&1; then
-    print -r -- "sqlite3: yes ($(command -v sqlite3))"
-  else
-    print -r -- "sqlite3: no, using TSV index fallback"
-  fi
-  if [[ -n "$TO_HELPER" && -x "$TO_HELPER" ]]; then
-    print -r -- "helper: yes ($TO_HELPER)"
-  else
-    print -r -- "helper: no"
-  fi
-  if _to_watch_backend >/dev/null 2>&1; then
-    print -r -- "watcher: yes ($(_to_watch_backend))"
-  else
-    print -r -- "watcher: no"
-  fi
-  if [[ -n "$TO_AI_COMMAND" ]]; then
-    print -r -- "ai command: $TO_AI_COMMAND"
-  else
-    print -r -- "ai command: no"
-  fi
-  if [[ -n "$TO_AI_RANK_COMMAND" ]]; then
-    print -r -- "ai rank command: $TO_AI_RANK_COMMAND"
-  else
-    print -r -- "ai rank command: no"
-  fi
-  print -r -- "discovery mode: $(_to_discovery_mode_label)"
-  print -r -- "max depth: $TO_MAX_DEPTH"
-  print -r -- "path fragment search: $TO_SEARCH_PATH_FRAGMENTS"
-  print -r -- "follow symlinks: $TO_FOLLOW_SYMLINKS"
-  print -r -- "watch debounce: $TO_WATCH_DEBOUNCE"
-  print -r -- "autowatch: $TO_AUTOWATCH"
-  print -r -- "auto add roots: $TO_AUTO_ADD_ROOTS"
-  print -r -- "frecency: $TO_FRECENCY"
-  print -r -- "frecency threshold: $TO_FRECENCY_THRESHOLD"
+  print -r -- ""
+  print -r -- "Search"
+  print -r -- "  fd: $(_to_command_enabled fd)"
+  print -r -- "  sqlite: $sqlite_status"
+  print -r -- "  frecency: $(_to_on_off "$TO_FRECENCY")"
+  print -r -- "  frecency threshold: $TO_FRECENCY_THRESHOLD"
+  print -r -- ""
+  print -r -- "Discovery"
+  print -r -- "  mode: $(_to_discovery_mode_label)"
+  print -r -- "  roots: $roots_count"
+  print -r -- "  watcher: $watcher_status"
+  print -r -- "  autowatch: $(_to_on_off "$TO_AUTOWATCH")"
+  print -r -- "  auto add roots: $(_to_on_off "$TO_AUTO_ADD_ROOTS")"
+  print -r -- ""
+  print -r -- "Performance"
+  print -r -- "  max depth: $TO_MAX_DEPTH"
+  print -r -- "  path fragment search: $(_to_on_off "$TO_SEARCH_PATH_FRAGMENTS")"
+  print -r -- "  follow symlinks: $(_to_on_off "$TO_FOLLOW_SYMLINKS")"
+  print -r -- "  watch debounce: ${TO_WATCH_DEBOUNCE}s"
+  print -r -- ""
+  print -r -- "Statistics"
+  print -r -- "  sqlite entries: $(_to_sqlite_total_entries)"
+  print -r -- "  sqlite dirs: $(_to_sqlite_count dirs)"
+  print -r -- "  directory history: $(_to_sqlite_count history)"
+  print -r -- "  file cache: $(_to_sqlite_count files)"
+  print -r -- "  last reindex: $(_to_time_ago "$last_reindex")"
+  print -r -- "  most used root: $(_to_most_used_root)"
+  print -r -- "  cache hit rate: $(_to_hit_rate)"
+  print -r -- "  last search: $(_to_stat_get last_search unknown)"
+
+  (( verbose == 1 )) || return 0
+  print -r -- ""
+  print -r -- "Verbose"
+  command -v fd >/dev/null 2>&1 && print -r -- "  fd path: $(command -v fd)" || print -r -- "  fd path: no"
+  command -v fzf >/dev/null 2>&1 && print -r -- "  fzf path: $(command -v fzf)" || print -r -- "  fzf path: no"
+  command -v sqlite3 >/dev/null 2>&1 && print -r -- "  sqlite3 path: $(command -v sqlite3)" || print -r -- "  sqlite3 path: no"
+  [[ -n "$TO_HELPER" && -x "$TO_HELPER" ]] && print -r -- "  helper: $TO_HELPER" || print -r -- "  helper: no"
+  [[ -n "$TO_AI_COMMAND" ]] && print -r -- "  ai command: $TO_AI_COMMAND" || print -r -- "  ai command: no"
+  [[ -n "$TO_AI_RANK_COMMAND" ]] && print -r -- "  ai rank command: $TO_AI_RANK_COMMAND" || print -r -- "  ai rank command: no"
 }
 
 _to_add_alias() {
@@ -2566,17 +2794,70 @@ _to_remove_workspace() {
   print -r -- "to: removed workspace $1"
 }
 
-_to_git_repo_matches() {
-  local query="$1"
-  local -a matches roots candidates seen
-  local root dir repo key
+_to_repo_score_sql() {
+  local now="$1"
 
-  matches=("${(@f)$(_to_index_query git "$query")}")
-  matches=("${(@)matches:#}")
-  if (( ${#matches} > 0 )); then
-    printf '%s\n' "${matches[@]}"
-    return
-  fi
+  print -r -- "case when h.visits is null then 0 when $now - h.last_used <= 3600 then h.visits * 4.0 when $now - h.last_used <= 86400 then h.visits * 2.0 when $now - h.last_used <= 604800 then h.visits * 0.5 else h.visits * 0.25 end"
+}
+
+_to_repo_query_sqlite() {
+  local -a queries clauses compact_parts
+  local -a matches
+  local query first compact phrase now score_sql where sql
+
+  command -v sqlite3 >/dev/null 2>&1 || return 1
+  [[ -r "$TO_INDEX_FILE" ]] || return 1
+  _to_index_ensure_sqlite_schema || return 1
+  queries=("${(@L)@}")
+  (( ${#queries} > 0 )) || return 1
+  first="${queries[1]}"
+
+  for query in "${queries[@]}"; do
+    clauses+=("(d.repo_name like $(_to_sql_quote "%$query%") or lower(d.path) like $(_to_sql_quote "%$query%"))")
+    compact_parts+=("$query")
+  done
+  compact="${(j:-:)compact_parts}"
+  phrase="${(j: :)queries}"
+  where="${(j: and :)clauses}"
+  now="$(_to_now)"
+  score_sql="$(_to_repo_score_sql "$now")"
+
+  sql="select d.path from dirs d left join history h on h.path = d.path where d.repo = 1 and $where order by ($score_sql) desc, case when d.repo_name = $(_to_sql_quote "$compact") then 0 when replace(d.repo_name, '-', ' ') = $(_to_sql_quote "$phrase") then 1 when d.repo_name like $(_to_sql_quote "$first%") then 2 else 3 end, d.depth asc, length(d.path), d.path limit 50;"
+  matches=("${(@f)$(sqlite3 -noheader "$TO_INDEX_FILE" "$sql" 2>/dev/null)}")
+  _to_index_filter_existing "${matches[@]}"
+}
+
+_to_repo_list_sqlite() {
+  local -a matches
+  local now score_sql sql
+
+  command -v sqlite3 >/dev/null 2>&1 || return 1
+  [[ -r "$TO_INDEX_FILE" ]] || return 1
+  _to_index_ensure_sqlite_schema || return 1
+  now="$(_to_now)"
+  score_sql="$(_to_repo_score_sql "$now")"
+  sql="select d.path from dirs d left join history h on h.path = d.path where d.repo = 1 order by ($score_sql) desc, coalesce(h.last_used, d.last_used) desc, d.repo_name, d.path limit 50;"
+  matches=("${(@f)$(sqlite3 -noheader "$TO_INDEX_FILE" "$sql" 2>/dev/null)}")
+  _to_index_filter_existing "${matches[@]}"
+}
+
+_to_repo_matches_query() {
+  local repo="$1"
+  shift
+  local haystack="${(L)repo}"
+  local name="${(L)repo:t}"
+  local query
+
+  (( $# > 0 )) || return 0
+  for query in "$@"; do
+    query="${(L)query}"
+    [[ "$name" == *"$query"* || "$haystack" == *"$query"* ]] || return 1
+  done
+}
+
+_to_live_repo_matches() {
+  local -a roots candidates seen ranked
+  local root dir repo key
 
   _to_load_roots
   roots=("${TO_ROOTS[@]}")
@@ -2592,13 +2873,52 @@ _to_git_repo_matches() {
     for dir in "${candidates[@]}"; do
       repo="${dir:h}"
       [[ -d "$repo" ]] || continue
-      [[ "${(L)repo:t}" == *"${(L)query}"* || "${(L)repo}" == *"${(L)query}"* ]] || continue
+      _to_repo_matches_query "$repo" "$@" || continue
       key="${repo:A}"
       (( ${seen[(Ie)$key]} > 0 )) && continue
       seen+=("$key")
+      _to_index_upsert_dir "$key"
       print -r -- "$key"
     done
   done
+}
+
+_to_git_repo_matches() {
+  local -a matches
+
+  if (( $# == 0 )); then
+    _to_repo_list_sqlite
+    return
+  fi
+
+  matches=("${(@f)$(_to_repo_query_sqlite "$@")}")
+  matches=("${(@)matches:#}")
+  if (( ${#matches} > 0 )); then
+    _to_record_search_outcome "Repo Index"
+    printf '%s\n' "${matches[@]}"
+    return
+  fi
+
+  matches=("${(@f)$(_to_live_repo_matches "$@")}")
+  matches=("${(@)matches:#}")
+  if (( ${#matches} > 0 )); then
+    _to_record_search_outcome "Repo Filesystem Fallback"
+    printf '%s\n' "${(@f)$(_to_rank_dirs_by_usage "${matches[@]}")}"
+  fi
+}
+
+_to_nearest_git_root() {
+  local dir="${PWD:A}"
+
+  while [[ -n "$dir" && "$dir" != "/" ]]; do
+    if [[ -d "$dir/.git" || -f "$dir/.git" ]]; then
+      print -r -- "$dir"
+      return 0
+    fi
+    dir="${dir:h}"
+  done
+
+  return 1
 }
 
 _to_ai_matches() {
@@ -2631,14 +2951,16 @@ Usage:
   to add <name> <dir>       Add a user alias
   to remove <name>          Remove a user alias
   to aliases                List user aliases
-  to repo <query>           Jump to a matching Git repository
+  to repo [query...]        List repos, or jump to a matching Git repository
+  to git                    Jump to the nearest parent Git repository
   to recent                 Choose from recent jumps
   to workspace <name> <dir> Add a workspace alias
   to work <name>            Jump to a workspace
   to unwork <name>          Remove a workspace
   to workspaces             List workspaces
   to ai <query...>          Use TO_AI_COMMAND, or broad fallback search
-  to --doctor               Check dependencies and config
+  to --doctor               Show grouped diagnostics and runtime statistics
+  to --doctor --verbose     Include low-level tool paths and optional hooks
   to --reindex              Rebuild the directory index
   to --watch                Watch roots and reindex after filesystem changes
   to --version              Show version
@@ -2689,15 +3011,23 @@ to() {
       ;;
     repo)
       shift
-      [[ -n "$1" ]] || {
-        print -u2 -- "to: usage: to repo <query>"
-        return 2
-      }
-      target="$(_to_choose_match 0 "${(@f)$(_to_git_repo_matches "$1")}")"
+      if (( $# == 0 )); then
+        _to_git_repo_matches
+        return
+      fi
+      target="$(_to_choose_match 0 "${(@f)$(_to_git_repo_matches "$@")}")"
       if [[ $? -ne 0 || -z "$target" ]]; then
-        _to_print_no_match_advice "Git repository" "$1"
+        _to_record_search_outcome "Miss"
+        _to_print_no_match_advice "Git repository" "$@"
         return 1
       fi
+      cd "$target" && _to_after_cd "$PWD"
+      ;;
+    git)
+      target="$(_to_nearest_git_root)" || {
+        print -u2 -- "to: no parent Git repository from $PWD"
+        return 1
+      }
       cd "$target" && _to_after_cd "$PWD"
       ;;
     recent)
@@ -2735,13 +3065,15 @@ to() {
       }
       target="$(_to_choose_match 0 "${(@f)$(_to_ai_matches "$@")}")"
       if [[ $? -ne 0 || -z "$target" ]]; then
+        _to_record_search_outcome "Miss"
         print -u2 -- "to: no AI/fallback matches: ${(j: :)@}"
         return 1
       fi
       cd "$target" && _to_after_cd "$PWD"
       ;;
     --doctor)
-      _to_doctor
+      shift
+      _to_doctor "${1:-}"
       ;;
     --reindex)
       _to_reindex
@@ -2774,6 +3106,7 @@ to() {
         return 2
       fi
       if [[ $resolve_status -ne 0 || -z "$target" ]]; then
+        _to_record_search_outcome "Miss"
         _to_print_no_match_advice "directory" "$@"
         return 1
       fi

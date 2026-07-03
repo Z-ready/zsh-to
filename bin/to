@@ -19,9 +19,11 @@ After initialization, the zsh function named `to` handles directory jumps:
   to use ~/Projects
   to backend
   to README.md
+  to repo ai template
+  to git
 
-After shell integration, repeated jumps use frecency history before falling
-back to configured-root index and fd/find discovery.
+After shell integration, `to` combines frecency history, a SQLite index, and
+confined live search for directories, files, and Git repositories.
 EOF
 }
 
