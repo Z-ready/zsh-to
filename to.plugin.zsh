@@ -1,6 +1,9 @@
 # to: exploratory directory jumper for zsh.
 
 : ${TO_WATCH_DEBOUNCE:=2}
+: ${TO_AUTOWATCH:=0}
+: ${TO_AUTO_ADD_ROOTS:=0}
+: ${TO_ROOT_MODE:=home}
 
 typeset -ga TO_ROOTS
 typeset -ga TO_EXCLUDES
@@ -9,7 +12,12 @@ typeset -g TO_INTERACTIVE_THRESHOLD
 typeset -g TO_SEARCH_PATH_FRAGMENTS
 typeset -g TO_FOLLOW_SYMLINKS
 typeset -g TO_WATCH_DEBOUNCE
+typeset -g TO_AUTOWATCH
+typeset -g TO_AUTO_ADD_ROOTS
+typeset -g TO_ROOT_MODE
 typeset -g _TO_SQLITE_SCHEMA_READY_FILE
+typeset -g _TO_AUTOWATCH_PID
+typeset -g _TO_AUTOWATCH_PID_FILE
 typeset -r _TO_VERSION="1.2.1"
 
 _to_apply_positive_int_default() {
@@ -48,12 +56,22 @@ _to_apply_nonnegative_int_default() {
   fi
 }
 
+_to_apply_root_mode_default() {
+  case "$TO_ROOT_MODE" in
+    home|explicit) ;;
+    *) TO_ROOT_MODE=home ;;
+  esac
+}
+
 _to_apply_config_defaults() {
   _to_apply_positive_int_default TO_MAX_DEPTH 8
   _to_apply_positive_int_default TO_INTERACTIVE_THRESHOLD 3
   _to_apply_bool_default TO_SEARCH_PATH_FRAGMENTS 0
   _to_apply_bool_default TO_FOLLOW_SYMLINKS 0
+  _to_apply_bool_default TO_AUTOWATCH 0
+  _to_apply_bool_default TO_AUTO_ADD_ROOTS 0
   _to_apply_nonnegative_int_default TO_WATCH_DEBOUNCE 2
+  _to_apply_root_mode_default
 }
 
 : ${TO_CONFIG_HOME:="${XDG_CONFIG_HOME:-$HOME/.config}/to"}
@@ -72,6 +90,10 @@ _to_apply_config_defaults() {
 : ${TO_SEARCH_PATH_FRAGMENTS:=0}
 : ${TO_FOLLOW_SYMLINKS:=0}
 : ${TO_WATCH_DEBOUNCE:=2}
+: ${TO_AUTOWATCH:=0}
+: ${TO_AUTO_ADD_ROOTS:=0}
+: ${TO_ROOT_MODE:=home}
+_TO_AUTOWATCH_PID_FILE="$TO_CONFIG_HOME/watch.pid"
 
 TO_ROOTS=()
 TO_EXCLUDES=(
@@ -139,9 +161,11 @@ _to_load_roots() {
     done < "$TO_ROOTS_FILE"
   fi
 
-  default_roots=(
-    "$HOME"
-  )
+  if [[ "$TO_ROOT_MODE" == home ]]; then
+    default_roots=("$HOME")
+  else
+    default_roots=()
+  fi
   TO_ROOTS=("${(@f)$(_to_unique_existing_dirs "${TO_ROOTS[@]}" "${file_roots[@]}" "${default_roots[@]}")}")
 }
 
@@ -158,8 +182,6 @@ _to_builtin_alias() {
     download|downloads) target="$HOME/Downloads" ;;
     desktop) target="$HOME/Desktop" ;;
     document|documents) target="$HOME/Documents" ;;
-    project|projects) target="$HOME/Projects" ;;
-    code) target="$HOME/Code" ;;
   esac
 
   [[ -n "$target" && -d "$target" ]] && print -r -- "$target"
@@ -221,6 +243,48 @@ _to_root_mtime() {
 
 _to_index_config_key() {
   print -r -- "depth=$TO_MAX_DEPTH;follow=$TO_FOLLOW_SYMLINKS;excludes=${(j:,:)TO_EXCLUDES}"
+}
+
+_to_discovery_mode_label() {
+  if [[ "$TO_ROOT_MODE" == explicit ]]; then
+    print -r -- "explicit roots"
+  else
+    print -r -- "home-first"
+  fi
+}
+
+_to_roots_summary() {
+  _to_load_roots
+  if (( ${#TO_ROOTS} == 0 )); then
+    print -r -- "none"
+  else
+    print -r -- "${(j:, :)TO_ROOTS}"
+  fi
+}
+
+_to_print_no_match_advice() {
+  local kind="$1"
+  shift
+
+  print -u2 -- "to: no matching $kind: ${(j: :)@}"
+  print -u2 -- "to: searched $(_to_discovery_mode_label) roots: $(_to_roots_summary)"
+  print -u2 -- "to: inspect roots with: to roots"
+  print -u2 -- "to: add another root with: to use <dir>"
+}
+
+_to_root_is_safe_to_add() {
+  local dir="${1:A}"
+
+  case "$dir" in
+    /|/System|/System/*|/Library|/Library/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/etc|/etc/*|/dev|/dev/*|/proc|/proc/*|/sys|/sys/*|/run|/run/*)
+      return 1
+      ;;
+    /private|/var)
+      return 1
+      ;;
+  esac
+
+  return 0
 }
 
 _to_dir_tokens() {
@@ -705,6 +769,42 @@ _to_search_exact_name() {
     _to_search_exact_name_with_fd "$root" "$query" "$limit"
   else
     _to_search_exact_name_with_find "$root" "$query" "$limit"
+  fi
+}
+
+_to_search_exact_file_with_fd() {
+  local root="$1"
+  local query="$2"
+  local limit="${3:-100}"
+  local -a exclude_args follow_args
+
+  exclude_args=("${(@f)$(_to_exclude_args_fd)}")
+  (( TO_FOLLOW_SYMLINKS == 1 )) && follow_args=(--follow)
+  fd --type f --hidden "${follow_args[@]}" --max-depth "$TO_MAX_DEPTH" \
+    --glob --ignore-case --max-results "$limit" "${exclude_args[@]}" "$query" "$root" 2>/dev/null
+}
+
+_to_search_exact_file_with_find() {
+  local root="$1"
+  local query="$2"
+  local -a prune_expr
+
+  prune_expr=("${(@f)$(_to_prune_expr_find)}")
+  if (( ${#prune_expr} > 0 )); then
+    find "$root" -maxdepth "$TO_MAX_DEPTH" \( "${prune_expr[@]}" \) -prune -o -type f -iname "$query" -print 2>/dev/null
+  else
+    find "$root" -maxdepth "$TO_MAX_DEPTH" -type f -iname "$query" -print 2>/dev/null
+  fi
+}
+
+_to_search_exact_file() {
+  local root="$1"
+  local query="$2"
+
+  if command -v fd >/dev/null 2>&1; then
+    _to_search_exact_file_with_fd "$root" "$query"
+  else
+    _to_search_exact_file_with_find "$root" "$query"
   fi
 }
 
@@ -1269,6 +1369,64 @@ _to_index_upsert_dir() {
   fi
 }
 
+_to_dir_is_under_configured_root() {
+  local dir="${1:A}"
+  local root
+
+  _to_load_roots
+  for root in "${TO_ROOTS[@]}"; do
+    root="${root:A}"
+    [[ "$dir" == "$root" || "$dir" == "$root"/* ]] && return 0
+  done
+
+  return 1
+}
+
+_to_add_root_silent() {
+  local dir="${1:A}"
+
+  [[ -d "$dir" ]] || return 1
+  _to_load_roots
+  TO_ROOTS=("${(@f)$(_to_unique_existing_dirs "$dir" "${TO_ROOTS[@]}")}")
+  _to_save_roots
+}
+
+_to_maybe_add_external_root() {
+  local dir="${1:A}"
+  local parent reply
+
+  [[ -d "$dir" ]] || return 0
+  _to_dir_is_under_configured_root "$dir" && return 0
+
+  parent="${dir:h}"
+  [[ -d "$parent" ]] || return 0
+  _to_root_is_safe_to_add "$parent" || {
+    print -u2 -- "to: found $dir outside your roots; not adding broad system root $parent"
+    print -u2 -- "to: add a safer, narrower root with: to use <dir>"
+    return 0
+  }
+  if (( TO_AUTO_ADD_ROOTS == 1 )); then
+    _to_add_root_silent "$parent" && print -u2 -- "to: added search root $parent"
+    return 0
+  fi
+
+  [[ -t 0 && -t 2 ]] || {
+    print -u2 -- "to: found $dir outside your roots; add it with: to use ${(q)parent}"
+    return 0
+  }
+
+  printf 'to: found %s outside your roots. Add %s as a search root? [y/N] ' "$dir" "$parent" >&2
+  read -r reply
+  case "${(L)reply}" in
+    y|yes)
+      _to_add_root_silent "$parent" && print -u2 -- "to: added search root $parent"
+      ;;
+    *)
+      print -u2 -- "to: leaving roots unchanged"
+      ;;
+  esac
+}
+
 _to_after_cd() {
   local dir="${1:A}"
 
@@ -1447,6 +1605,100 @@ _to_rank_matches() {
   printf '%s\n' "${candidates[@]}"
 }
 
+_to_dir_usage_fields() {
+  local dir="${1:A}"
+  local fields recent_line recent_time
+
+  if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]]; then
+    _to_index_ensure_sqlite_schema >/dev/null 2>&1
+    fields="$(sqlite3 -noheader "$TO_INDEX_FILE" "select last_used || char(9) || hit_count from dirs where path = $(_to_sql_quote "$dir");" 2>/dev/null)"
+    if [[ -n "$fields" ]]; then
+      print -r -- "$fields"
+      return
+    fi
+  fi
+
+  recent_time=0
+  if [[ -r "$TO_RECENT_FILE" ]]; then
+    recent_line="$(grep -F "	$dir" "$TO_RECENT_FILE" 2>/dev/null | head -n 1)"
+    [[ -n "$recent_line" ]] && recent_time="${recent_line%%	*}"
+  fi
+  print -r -- "${recent_time:-0}	0"
+}
+
+_to_dir_is_better_rank() {
+  local candidate="$1"
+  local incumbent="$2"
+  local candidate_last candidate_hits incumbent_last incumbent_hits
+  local candidate_fields incumbent_fields
+
+  [[ -n "$incumbent" ]] || return 0
+  candidate_fields="$(_to_dir_usage_fields "$candidate")"
+  incumbent_fields="$(_to_dir_usage_fields "$incumbent")"
+  candidate_last="${candidate_fields%%	*}"
+  candidate_hits="${candidate_fields#*	}"
+  incumbent_last="${incumbent_fields%%	*}"
+  incumbent_hits="${incumbent_fields#*	}"
+
+  (( ${candidate_last:-0} > ${incumbent_last:-0} )) && return 0
+  (( ${candidate_last:-0} < ${incumbent_last:-0} )) && return 1
+  (( ${candidate_hits:-0} > ${incumbent_hits:-0} )) && return 0
+  (( ${candidate_hits:-0} < ${incumbent_hits:-0} )) && return 1
+  (( ${#candidate} < ${#incumbent} ))
+}
+
+_to_rank_dirs_by_usage() {
+  local -a remaining ranked next
+  local dir best
+
+  remaining=("$@")
+  while (( ${#remaining} > 0 )); do
+    best=""
+    for dir in "${remaining[@]}"; do
+      if _to_dir_is_better_rank "$dir" "$best"; then
+        best="$dir"
+      fi
+    done
+    [[ -n "$best" ]] || break
+    ranked+=("$best")
+    next=()
+    for dir in "${remaining[@]}"; do
+      [[ "$dir" == "$best" ]] || next+=("$dir")
+    done
+    remaining=("${next[@]}")
+  done
+
+  printf '%s\n' "${ranked[@]}"
+}
+
+_to_collect_file_parent_matches() {
+  local roots_ref="$1"
+  local query="$2"
+  local -a search_roots parents ranked seen files
+  local root file parent key
+
+  [[ "$query" != */* ]] || return 1
+  search_roots=("${(@P)roots_ref}")
+  for root in "${search_roots[@]}"; do
+    [[ -d "$root" ]] || continue
+    files=("${(@f)$(_to_search_exact_file "$root" "$query")}")
+    for file in "${files[@]}"; do
+      [[ -f "$file" ]] || continue
+      parent="${file:A:h}"
+      [[ -d "$parent" ]] || continue
+      key="${parent:A}"
+      if (( ${seen[(Ie)$key]} == 0 )); then
+        seen+=("$key")
+        parents+=("$key")
+      fi
+    done
+  done
+
+  (( ${#parents} > 0 )) || return 1
+  ranked=("${(@f)$(_to_rank_dirs_by_usage "${parents[@]}")}")
+  printf '%s\n' "${ranked[@]}"
+}
+
 _to_collect_matches_for_mode() {
   local -a search_roots queries unique ranked
   local root dir key roots_ref mode
@@ -1532,6 +1784,13 @@ _to_collect_matches() {
 
   if (( ${#queries} == 1 )) && [[ "$queries[1]" != */* ]]; then
     matches=("${(@f)$(_to_collect_matches_for_mode "$roots_ref" exact "${queries[@]}")}")
+    matches=("${(@)matches:#}")
+    if (( ${#matches} > 0 )); then
+      printf '%s\n' "${matches[@]}"
+      return
+    fi
+
+    matches=("${(@f)$(_to_collect_file_parent_matches "$roots_ref" "$queries[1]")}")
     matches=("${(@)matches:#}")
     if (( ${#matches} > 0 )); then
       printf '%s\n' "${matches[@]}"
@@ -1660,6 +1919,11 @@ _to_resolve() {
         print -r -- "$exact_target"
         return
       fi
+      exact_target="$(_to_collect_file_parent_matches roots "$queries[1]" | head -n 1)"
+      if [[ -n "$exact_target" ]]; then
+        print -r -- "$exact_target"
+        return
+      fi
       (( TO_SEARCH_PATH_FRAGMENTS == 1 )) || return 1
     fi
   fi
@@ -1673,6 +1937,11 @@ _to_use_root() {
 
   [[ -d "$dir" ]] || {
     print -u2 -- "to: not a directory: ${1:-.}"
+    return 1
+  }
+  _to_root_is_safe_to_add "$dir" || {
+    print -u2 -- "to: refusing broad system root: $dir"
+    print -u2 -- "to: add a narrower directory that contains the places you actually jump to"
     return 1
   }
 
@@ -1766,6 +2035,32 @@ _to_watch() {
   esac
 }
 
+_to_pid_is_running() {
+  local pid="$1"
+
+  [[ "$pid" == <-> ]] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+_to_autowatch_start() {
+  local existing_pid
+
+  setopt local_options no_bg_nice
+
+  (( TO_AUTOWATCH == 1 )) || return 0
+  [[ -n "${_TO_AUTOWATCH_PID:-}" ]] && kill -0 "$_TO_AUTOWATCH_PID" 2>/dev/null && return 0
+  _to_watch_backend >/dev/null 2>&1 || return 0
+  mkdir -p "$TO_CONFIG_HOME" || return 0
+  if [[ -r "$_TO_AUTOWATCH_PID_FILE" ]]; then
+    existing_pid="$(<"$_TO_AUTOWATCH_PID_FILE")"
+    _to_pid_is_running "$existing_pid" && return 0
+  fi
+
+  ( _to_watch >/dev/null 2>&1; rm -f "$_TO_AUTOWATCH_PID_FILE" ) &
+  _TO_AUTOWATCH_PID=$!
+  print -r -- "$_TO_AUTOWATCH_PID" > "$_TO_AUTOWATCH_PID_FILE" 2>/dev/null || true
+}
+
 _to_doctor() {
   print -r -- "to config: $TO_CONFIG_FILE"
   print -r -- "to roots:  $TO_ROOTS_FILE"
@@ -1805,10 +2100,13 @@ _to_doctor() {
   else
     print -r -- "ai rank command: no"
   fi
+  print -r -- "discovery mode: $(_to_discovery_mode_label)"
   print -r -- "max depth: $TO_MAX_DEPTH"
   print -r -- "path fragment search: $TO_SEARCH_PATH_FRAGMENTS"
   print -r -- "follow symlinks: $TO_FOLLOW_SYMLINKS"
   print -r -- "watch debounce: $TO_WATCH_DEBOUNCE"
+  print -r -- "autowatch: $TO_AUTOWATCH"
+  print -r -- "auto add roots: $TO_AUTO_ADD_ROOTS"
 }
 
 _to_add_alias() {
@@ -1945,7 +2243,11 @@ Config:
   TO_SEARCH_PATH_FRAGMENTS=1  Also match any path containing the query
   TO_FOLLOW_SYMLINKS=0         Do not follow symlinks while searching
   TO_FOLLOW_SYMLINKS=1         Follow symlinks while searching
+  TO_ROOT_MODE=home            Search HOME plus configured roots
+  TO_ROOT_MODE=explicit        Search only configured roots
   TO_WATCH_DEBOUNCE=2          Seconds to wait before watcher reindex
+  TO_AUTOWATCH=1               Start a background watcher when loaded
+  TO_AUTO_ADD_ROOTS=1          Add temporary-search parent roots automatically
   TO_AI_COMMAND               External command that prints candidate dirs
   TO_AI_RANK_COMMAND          External command that ranks candidate dirs from stdin
   TO_HELPER                   Optional to-helper binary path
@@ -1986,8 +2288,7 @@ to() {
       }
       target="$(_to_choose_match 0 "${(@f)$(_to_git_repo_matches "$1")}")"
       if [[ $? -ne 0 || -z "$target" ]]; then
-        print -u2 -- "to: no matching Git repository: $1"
-        print -u2 -- "to: add the parent directory with: to use <dir>"
+        _to_print_no_match_advice "Git repository" "$1"
         return 1
       fi
       cd "$target" && _to_after_cd "$PWD"
@@ -2066,11 +2367,10 @@ to() {
         return 2
       fi
       if [[ $resolve_status -ne 0 || -z "$target" ]]; then
-        print -u2 -- "to: no matching directory: ${(j: :)@}"
-        print -u2 -- "to: add a search root with: to use <dir>"
+        _to_print_no_match_advice "directory" "$@"
         return 1
       fi
-      cd "$target" && _to_after_cd "$PWD"
+      cd "$target" && _to_maybe_add_external_root "$PWD" && _to_after_cd "$PWD"
       ;;
   esac
 }
@@ -2078,3 +2378,5 @@ to() {
 if (( $+functions[compdef] )); then
   compdef _to to 2>/dev/null
 fi
+
+_to_autowatch_start

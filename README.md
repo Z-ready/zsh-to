@@ -42,13 +42,14 @@ Reload zsh:
 source ~/.zshrc
 ```
 
-Add a focused search root:
+By default, `to` searches your home directory. Add focused roots only when you
+keep work outside your home directory or want a narrower setup:
 
 ```zsh
-to use ~/Projects
+to use /path/to/a/root
 ```
 
-Build the initial index:
+Warm the index when you want faster first searches:
 
 ```zsh
 to --reindex
@@ -58,6 +59,21 @@ Jump:
 
 ```zsh
 to backend
+```
+
+If you create a new directory after indexing, `to` can still find it on the
+first query through live `fd`/`find` fallback and cache it for later:
+
+```zsh
+mkdir -p ~/somewhere/new-service
+to new-service
+```
+
+You can also jump by file name. `to` searches for the file on demand and jumps
+to the directory that contains it:
+
+```zsh
+to package.json
 ```
 
 Check the installed version:
@@ -179,11 +195,11 @@ directory:
 ~
 ```
 
-That means directories under `~/Projects`, `~/Documents`, `~/Pictures`,
-`~/Downloads`, custom folders, and other normal home subdirectories are
-discoverable without guessing where you keep things. `to` still avoids common
-heavy or noisy directories through `TO_EXCLUDES`, and it does not follow
-symlinked directory trees unless you opt in.
+Home-first discovery means any directory under your home directory can be
+valid. `to` does not assume names such as `Projects`, `Code`, `workspace`, or
+anything author-specific. It still avoids common heavy or noisy directories
+through `TO_EXCLUDES`, limits scan depth with `TO_MAX_DEPTH`, and does not
+follow symlinked directory trees unless you opt in.
 
 Add extra roots when you keep files outside your home directory:
 
@@ -193,10 +209,27 @@ to use /work
 to roots
 ```
 
+Search outside your saved roots without changing config:
+
+```zsh
+to -r /mnt/data/projects backend
+```
+
 Remove roots you no longer want:
 
 ```zsh
 to unuse /Volumes/Media
+```
+
+If your home directory is too large, switch to explicit-root mode and list only
+the roots you want searched:
+
+```zsh
+TO_ROOT_MODE=explicit
+TO_ROOTS=(
+  "$HOME/src"
+  "/Volumes/Work"
+)
 ```
 
 ## Usage
@@ -221,6 +254,13 @@ Jump by multiple keywords:
 to app backend
 ```
 
+Jump to the directory containing a file:
+
+```zsh
+to Cargo.toml
+to package.json
+```
+
 Force interactive selection:
 
 ```zsh
@@ -230,8 +270,8 @@ to -i backend
 Temporarily search from one root:
 
 ```zsh
-to -r ~/Projects backend
-to --from ~/Projects backend
+to -r /path/to/root backend
+to --from /path/to/root backend
 ```
 
 ### Built-in aliases
@@ -242,8 +282,6 @@ These aliases work when the target directories exist:
 download / downloads -> ~/Downloads
 desktop              -> ~/Desktop
 document/documents   -> ~/Documents
-project/projects     -> ~/Projects
-code                 -> ~/Code
 ```
 
 Example:
@@ -280,10 +318,14 @@ to remove blog
 
 ### Search roots
 
-`to` automatically searches your home directory by default. You do not need to
-teach it whether you keep projects under `~/Projects`, photos under
-`~/Pictures`, downloads under `~/Downloads`, or custom folders directly under
-`~`.
+`to` has two discovery modes:
+
+- `TO_ROOT_MODE=home` (default): search `$HOME` plus configured roots.
+- `TO_ROOT_MODE=explicit`: search only configured roots.
+
+Home-first mode is intentionally layout-agnostic. You do not need to teach
+`to` whether you keep code, notes, media, or work trees under any particular
+folder name.
 
 Add the current directory:
 
@@ -294,7 +336,7 @@ to use .
 Add a specific directory:
 
 ```zsh
-to use ~/Projects
+to use /path/to/a/root
 ```
 
 List roots:
@@ -306,18 +348,24 @@ to roots
 Remove a root:
 
 ```zsh
-to unuse ~/Projects
+to unuse /path/to/a/root
 ```
 
-If you want a narrower setup for a very large home directory, set explicit
-roots in `~/.config/to/config.zsh` and lower `TO_MAX_DEPTH`.
+If you want a narrower setup for a very large home directory, set
+`TO_ROOT_MODE=explicit`, define `TO_ROOTS`, and lower `TO_MAX_DEPTH`.
+
+When a temporary `to -r <root> <query>` search finds a directory outside your
+saved roots, `to` tells you which parent to add. Set `TO_AUTO_ADD_ROOTS=1` if
+you want those temporary-search parent roots added automatically after a
+successful jump. `to` refuses broad system roots such as `/`, `/System`, and
+`/usr`; add a narrower directory that contains the places you actually jump to.
 
 ### Workspaces
 
 Workspaces are named destinations:
 
 ```zsh
-to workspace work ~/Documents/work
+to workspace work /path/to/work
 to work work
 ```
 
@@ -377,15 +425,15 @@ to -r <root> <query...>   # temporarily search from one root
 to --from <root> <query>  # same as -r
 
 to use .                  # add the current directory as a search root
-to use ~/Projects         # add a specific search root
-to unuse ~/Projects       # remove a search root
+to use /path/to/root      # add a specific search root
+to unuse /path/to/root    # remove a search root
 to roots                  # list search roots
 
 to add blog ~/Notes/blog  # add a user alias
 to remove blog            # remove a user alias
 to aliases                # list user aliases
 
-to workspace work ~/Work  # add a workspace
+to workspace work /path/to/work  # add a workspace
 to work work              # jump to a workspace
 to unwork work            # remove a workspace
 to workspaces             # list workspaces
@@ -420,7 +468,8 @@ Resolution order:
 5. SQLite Git repo matches.
 6. SQLite token matches for multi-word queries.
 7. SQLite path-fragment matches.
-8. `fd` discovery, with `find` fallback.
+8. Live directory discovery with `fd`, with `find` fallback.
+9. Exact file-name discovery, jumping to the containing directory.
 
 Exact directory names win for plain single-word queries:
 
@@ -443,6 +492,18 @@ Multi-word queries require every token to appear somewhere in the path:
 to app backend
 ```
 
+File-name jumps are exact-name, on-demand searches:
+
+```zsh
+to pyproject.toml
+to README.md
+```
+
+If multiple directories contain the same file name, `to` prefers the directory
+you used most recently, then the one you use most often. File names are not
+stored in the main index; the containing directory is cached after a successful
+jump.
+
 Plain single-word path-fragment matching is disabled by default. Enable it
 only if you want broader results:
 
@@ -462,8 +523,8 @@ Example:
 
 ```zsh
 TO_ROOTS=(
-  "$HOME/Projects"
-  "$HOME/Documents"
+  "$HOME/src"
+  "/Volumes/Work"
 )
 
 TO_EXCLUDES=(
@@ -478,7 +539,10 @@ TO_MAX_DEPTH=8
 TO_INTERACTIVE_THRESHOLD=3
 TO_SEARCH_PATH_FRAGMENTS=0
 TO_FOLLOW_SYMLINKS=0
+TO_ROOT_MODE=home
 TO_WATCH_DEBOUNCE=2
+TO_AUTOWATCH=0
+TO_AUTO_ADD_ROOTS=0
 TO_AI_COMMAND=""
 TO_AI_RANK_COMMAND=""
 TO_HELPER=""
@@ -492,7 +556,10 @@ Options:
 | `TO_INTERACTIVE_THRESHOLD` | `3` | Result count where selection becomes useful |
 | `TO_SEARCH_PATH_FRAGMENTS` | `0` | Let plain words match anywhere in paths |
 | `TO_FOLLOW_SYMLINKS` | `0` | Search through symlinked directory trees |
+| `TO_ROOT_MODE` | `home` | `home` searches `$HOME` plus roots; `explicit` searches only configured roots |
 | `TO_WATCH_DEBOUNCE` | `2` | Seconds to wait before watcher reindex |
+| `TO_AUTOWATCH` | `0` | Start a background watcher when zsh integration loads |
+| `TO_AUTO_ADD_ROOTS` | `0` | Add temporary-search parent roots after successful external jumps |
 | `TO_AI_COMMAND` | empty | External command for `to ai <query...>` |
 | `TO_AI_RANK_COMMAND` | empty | External command that ranks candidates from stdin |
 | `TO_HELPER` | auto | Explicit path to `to-helper` |
@@ -534,7 +601,8 @@ commands you would be comfortable running directly in your shell.
 
 ## Performance
 
-`to` does not run a background daemon. Idle cost is effectively zero.
+`to` does not run a background daemon by default. Idle cost is effectively
+zero unless you opt in to watching.
 
 Normal jumps are index-first:
 
@@ -543,6 +611,22 @@ query -> SQLite -> validate path -> cd
                   -> fallback to fd/find on miss or stale path
                   -> write fresh result back to SQLite
 ```
+
+Fallback search runs only inside the configured roots, never across the whole
+filesystem by default. In home-first mode, a new directory anywhere under
+`$HOME` is discoverable immediately:
+
+```zsh
+mkdir -p "$HOME/somewhere/new-service"
+to new-service
+```
+
+That first jump writes the directory back to the index, so later queries can
+resolve from SQLite without a live scan.
+
+File-name jumps use the same roots and exclusions, but they scan file names on
+demand instead of indexing every file. This keeps the SQLite database small and
+avoids turning `to` into a full content indexer.
 
 The SQLite index stores:
 
@@ -572,6 +656,39 @@ Broader modes cost more:
 - `to -i backend` collects all matches for selection.
 - `TO_SEARCH_PATH_FRAGMENTS=1` lets single words match anywhere in a path.
 - `to --watch` runs a foreground watcher and reindexes after filesystem events.
+
+### Watching for changes
+
+Run a watcher when you want the index kept warm automatically:
+
+```zsh
+to --watch
+```
+
+On macOS, install `fswatch`:
+
+```zsh
+brew install fswatch
+```
+
+On Linux, install `inotify-tools`:
+
+```sh
+sudo apt-get install -y inotify-tools
+```
+
+The watcher monitors configured roots, waits `TO_WATCH_DEBOUNCE` seconds after
+an event, then runs incremental `to --reindex`. That adds new directories under
+changed roots and prunes stale indexed directories.
+
+To start the watcher automatically when `eval "$(to init zsh)"` loads the zsh
+integration, set:
+
+```zsh
+TO_AUTOWATCH=1
+```
+
+`TO_AUTOWATCH` starts only when `fswatch` or `inotifywait` is available.
 
 For lower energy use on large machines, prefer:
 
@@ -610,7 +727,14 @@ to -i backend
 Search one tree without changing saved roots:
 
 ```zsh
-to -r ~/Projects backend
+to -r /path/to/root backend
+```
+
+Avoid broad system roots. Prefer the narrowest directory that contains the
+places you actually jump to:
+
+```zsh
+to use /path/to/root
 ```
 
 If `to` finds too many matches, keep broad path search disabled:
@@ -624,7 +748,7 @@ your roots:
 
 ```zsh
 to roots
-to use ~/path-that-contains-your-repos
+to use /path/that/contains/repos
 to --reindex
 ```
 

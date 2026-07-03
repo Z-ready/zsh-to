@@ -42,11 +42,12 @@ TEST_DIR="${0:A:h}"
 mkdir -p \
   "$CONFIG" \
   "$HOME_DIR/Downloads" \
-  "$HOME_DIR/Projects" \
+  "$HOME_DIR/any shelf" \
   "$HOME_DIR/Pictures/头像" \
   "$HOME_DIR/Random Shelf/lightroom" \
   "$HOME_DIR/i" \
   "$ROOT/empty-root" \
+  "$ROOT/external-parent/external-target" \
   "$SEARCH_ROOT/app/src/components" \
   "$SEARCH_ROOT/app/services/backend" \
   "$SEARCH_ROOT/app/node_modules/backend" \
@@ -69,6 +70,7 @@ TO_MAX_DEPTH=bad
 TO_INTERACTIVE_THRESHOLD=bad
 TO_SEARCH_PATH_FRAGMENTS=bad
 TO_FOLLOW_SYMLINKS=bad
+TO_ROOT_MODE=bad
 TO_WATCH_DEBOUNCE=bad
 EOF
 
@@ -78,13 +80,53 @@ assert_eq "$TO_MAX_DEPTH" "8" "invalid config max depth falls back to default"
 assert_eq "$TO_INTERACTIVE_THRESHOLD" "3" "invalid config interactive threshold falls back to default"
 assert_eq "$TO_SEARCH_PATH_FRAGMENTS" "0" "invalid config path fragment setting falls back to default"
 assert_eq "$TO_FOLLOW_SYMLINKS" "0" "invalid config symlink setting falls back to default"
+assert_eq "$TO_ROOT_MODE" "home" "invalid root mode falls back to home"
 assert_eq "$TO_WATCH_DEBOUNCE" "2" "invalid config watch debounce falls back to default"
+assert_eq "$TO_AUTOWATCH" "0" "invalid config autowatch falls back to default"
+assert_eq "$TO_AUTO_ADD_ROOTS" "0" "invalid config auto add roots falls back to default"
 assert_eq "$(to --version)" "to 1.2.1" "plugin version output"
 assert_eq "$(to roots)" "${HOME_DIR:A}" "source ignores stale in-shell roots"
 assert_eq "$TO_WATCH_DEBOUNCE" "2" "watch debounce default"
 assert_eq "$TO_AI_RANK_COMMAND" "" "ai rank command default"
-assert_eq "$(_to_unique_existing_dirs "$HOME_DIR/Projects" "$HOME_DIR")" "${HOME_DIR:A}" "broader roots prune descendants"
-assert_eq "$(_to_unique_existing_dirs "$HOME_DIR" "$HOME_DIR/Projects")" "${HOME_DIR:A}" "descendant roots are redundant after broader roots"
+assert_eq "$(_to_unique_existing_dirs "$HOME_DIR/any shelf" "$HOME_DIR")" "${HOME_DIR:A}" "broader roots prune descendants"
+assert_eq "$(_to_unique_existing_dirs "$HOME_DIR" "$HOME_DIR/any shelf")" "${HOME_DIR:A}" "descendant roots are redundant after broader roots"
+
+EXPLICIT_ROOT="$ROOT/explicit-root"
+EXPLICIT_CONFIG="$ROOT/explicit-config"
+mkdir -p "$EXPLICIT_ROOT/only-target" "$HOME_DIR/home-only-target" "$EXPLICIT_CONFIG"
+{
+  print -r -- "TO_ROOT_MODE=explicit"
+  printf 'TO_ROOTS=(%q)\n' "$EXPLICIT_ROOT"
+} > "$EXPLICIT_CONFIG/config.zsh"
+explicit_roots="$(
+  HOME="$HOME_DIR" TO_CONFIG_HOME="$EXPLICIT_CONFIG" zsh -fc '
+    source "$1"
+    to roots
+  ' zsh "$TEST_DIR/../to.plugin.zsh"
+)"
+assert_eq "$explicit_roots" "${EXPLICIT_ROOT:A}" "explicit root mode omits home"
+explicit_jump="$(
+  HOME="$HOME_DIR" TO_CONFIG_HOME="$EXPLICIT_CONFIG" zsh -fc '
+    source "$1"
+    cd "$2" || exit 1
+    to only-target >/dev/null || exit 1
+    print -r -- "$PWD"
+  ' zsh "$TEST_DIR/../to.plugin.zsh" "$ROOT"
+)"
+assert_path_eq "$explicit_jump" "$EXPLICIT_ROOT/only-target" "explicit root mode searches configured roots"
+explicit_miss="$(
+  HOME="$HOME_DIR" TO_CONFIG_HOME="$EXPLICIT_CONFIG" zsh -fc '
+    source "$1"
+    to home-only-target
+  ' zsh "$TEST_DIR/../to.plugin.zsh" 2>&1 >/dev/null
+)"
+[[ "$explicit_miss" == *"searched explicit roots"* && "$explicit_miss" == *"${EXPLICIT_ROOT:A}"* ]] \
+  || fail "explicit root miss did not describe searched roots: $explicit_miss"
+ok "explicit root mode reports searched roots"
+
+broad_root_output="$(to use / 2>&1 >/dev/null || true)"
+[[ "$broad_root_output" == *"refusing broad system root"* ]] || fail "broad root was not refused: $broad_root_output"
+ok "broad system roots are refused"
 
 STAT_BIN="$ROOT/stat-bin"
 mkdir -p "$STAT_BIN"
@@ -115,6 +157,18 @@ assert_path_eq "$PWD" "$HOME_DIR/Pictures/头像" "default roots include Picture
 cd "$ROOT" || fail "could not reset cwd"
 to lightroom
 assert_path_eq "$PWD" "$HOME_DIR/Random Shelf/lightroom" "default root searches arbitrary home subdirectories"
+
+mkdir -p "$HOME_DIR/fresh-home-target"
+cd "$ROOT" || fail "could not reset cwd"
+to fresh-home-target
+assert_path_eq "$PWD" "$HOME_DIR/fresh-home-target" "fallback finds new directory under home"
+if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]]; then
+  fresh_home_path="${HOME_DIR:A}/fresh-home-target"
+  fresh_home_count="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from dirs where path = $(sql_quote "$fresh_home_path");")"
+  assert_eq "$fresh_home_count" "1" "fallback caches new home directory"
+  fresh_home_cached="$(_to_index_query exact fresh-home-target)"
+  assert_path_eq "$fresh_home_cached" "$HOME_DIR/fresh-home-target" "cached home directory is found without fallback"
+fi
 
 to use "$SEARCH_ROOT" >/dev/null
 
@@ -270,6 +324,15 @@ if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]]; then
   assert_path_eq "$token_match" "$SEARCH_ROOT/app/services/backend" "multi-keyword query uses token index"
 fi
 
+touch "$SEARCH_ROOT/app/services/backend/settings.toml" "$SEARCH_ROOT/other/backend/settings.toml"
+cd "$ROOT" || fail "could not reset cwd"
+to -r "$SEARCH_ROOT" settings.toml
+assert_path_eq "$PWD" "$SEARCH_ROOT/app/services/backend" "file-name jump prefers recently used containing directory"
+if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]]; then
+  file_parent_count="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from dirs where path = $(sql_quote "${SEARCH_ROOT:A}/app/services/backend");")"
+  assert_eq "$file_parent_count" "1" "file-name jump caches containing directory"
+fi
+
 AI_RANKER="$ROOT/ai-ranker"
 cat > "$AI_RANKER" <<'EOF'
 #!/usr/bin/env zsh
@@ -331,6 +394,8 @@ fi
 cd "$ROOT" || fail "could not reset cwd"
 missing_dir_output="$(to does-not-exist-here 2>&1 >/dev/null)"
 [[ "$missing_dir_output" == *"no matching directory"* ]] || fail "missing directory did not explain failure: $missing_dir_output"
+[[ "$missing_dir_output" == *"searched home-first roots"* && "$missing_dir_output" == *"to roots"* ]] \
+  || fail "missing directory did not include root advice: $missing_dir_output"
 ok "missing directory reports no match"
 
 unknown_option_output="$(to --definitely-not-a-to-option 2>&1 >/dev/null)"
@@ -346,6 +411,28 @@ ${HOME_DIR:A}" "use and roots persistence"
 to unuse "$SEARCH_ROOT" >/dev/null
 assert_eq "$(to roots)" "${HOME_DIR:A}" "unuse removes root"
 
+cd "$ROOT" || fail "could not reset cwd"
+EXTERNAL_OUTPUT="$ROOT/external-output"
+to -r "$ROOT/external-parent" external-target > /dev/null 2> "$EXTERNAL_OUTPUT"
+external_prompt_output="$(<"$EXTERNAL_OUTPUT")"
+assert_path_eq "$PWD" "$ROOT/external-parent/external-target" "temporary external root can find directory"
+[[ "$external_prompt_output" == *"outside your roots"* && "$external_prompt_output" == *"to use"* ]] \
+  || fail "external temporary match did not suggest adding root: $external_prompt_output"
+assert_eq "$(to roots)" "${HOME_DIR:A}" "external temporary match does not add root by default"
+
+TO_AUTO_ADD_ROOTS=1
+mkdir -p "$ROOT/auto-parent/auto-target"
+cd "$ROOT" || fail "could not reset cwd"
+AUTO_ROOT_OUTPUT="$ROOT/auto-root-output"
+to -r "$ROOT/auto-parent" auto-target > /dev/null 2> "$AUTO_ROOT_OUTPUT"
+auto_root_output="$(<"$AUTO_ROOT_OUTPUT")"
+assert_path_eq "$PWD" "$ROOT/auto-parent/auto-target" "auto add roots still jumps to external target"
+[[ "$auto_root_output" == *"added search root"* ]] || fail "auto add roots did not report added root: $auto_root_output"
+assert_eq "$(to roots)" "${ROOT:A}/auto-parent
+${HOME_DIR:A}" "auto add roots persists parent root"
+TO_AUTO_ADD_ROOTS=0
+to unuse "$ROOT/auto-parent" >/dev/null
+
 WATCH_BIN="$ROOT/watch-bin"
 mkdir -p "$WATCH_BIN"
 cat > "$WATCH_BIN/fswatch" <<'EOF'
@@ -358,12 +445,71 @@ PATH="$WATCH_BIN:$PATH"
 assert_eq "$(_to_watch_backend)" "fswatch" "watcher detects fswatch"
 PATH="$OLD_PATH"
 
+if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]]; then
+  WATCH_ROOT="$ROOT/watch-root"
+  WATCH_STATE="$ROOT/watch-state"
+  mkdir -p "$WATCH_ROOT/watched-created"
+  to use "$WATCH_ROOT" >/dev/null
+  sleep 1
+  touch "$WATCH_ROOT"
+  cat > "$WATCH_BIN/fswatch" <<'EOF'
+#!/usr/bin/env zsh
+if [[ ! -e "$TO_FAKE_WATCH_STATE" ]]; then
+  : > "$TO_FAKE_WATCH_STATE"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$WATCH_BIN/fswatch"
+  OLD_PATH="$PATH"
+  PATH="$WATCH_BIN:$PATH"
+  export TO_FAKE_WATCH_STATE="$WATCH_STATE"
+  _to_watch >/dev/null 2>&1
+  PATH="$OLD_PATH"
+  watched_match="$(_to_index_query exact watched-created)"
+  assert_path_eq "$watched_match" "$WATCH_ROOT/watched-created" "watcher reindex adds new directories"
+  to unuse "$WATCH_ROOT" >/dev/null
+fi
+
+if command -v sqlite3 >/dev/null 2>&1; then
+  AUTOWATCH_ROOT="$ROOT/autowatch"
+  AUTOWATCH_BIN="$AUTOWATCH_ROOT/bin"
+  mkdir -p "$AUTOWATCH_ROOT/home/autowatched-created" "$AUTOWATCH_ROOT/config" "$AUTOWATCH_BIN"
+  cat > "$AUTOWATCH_BIN/fswatch" <<'EOF'
+#!/usr/bin/env zsh
+if [[ ! -e "$TO_FAKE_AUTOWATCH_STATE" ]]; then
+  : > "$TO_FAKE_AUTOWATCH_STATE"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$AUTOWATCH_BIN/fswatch"
+  TO_AUTOWATCH_RESULT="$(
+    HOME="$AUTOWATCH_ROOT/home" \
+    TO_CONFIG_HOME="$AUTOWATCH_ROOT/config" \
+    TO_AUTOWATCH=1 \
+    TO_WATCH_DEBOUNCE=0 \
+    TO_FAKE_AUTOWATCH_STATE="$AUTOWATCH_ROOT/state" \
+    PATH="$AUTOWATCH_BIN:$PATH" \
+    zsh -fc '
+      source "$1"
+      [[ -n "$_TO_AUTOWATCH_PID" ]] || exit 1
+      wait "$_TO_AUTOWATCH_PID"
+      _to_index_query exact autowatched-created
+    ' zsh "$TEST_DIR/../to.plugin.zsh"
+  )"
+  assert_path_eq "$TO_AUTOWATCH_RESULT" "$AUTOWATCH_ROOT/home/autowatched-created" "autowatch starts on source and reindexes"
+fi
+
 doctor_output="$(to --doctor)"
 [[ "$doctor_output" == *"to config: $CONFIG/config.zsh"* ]] || fail "doctor config path"
 [[ "$doctor_output" == *"max depth: 8"* ]] || fail "doctor max depth"
 [[ "$doctor_output" == *"path fragment search: 0"* ]] || fail "doctor path fragment search"
 [[ "$doctor_output" == *"follow symlinks: 0"* ]] || fail "doctor follow symlinks"
 [[ "$doctor_output" == *"watch debounce: 2"* ]] || fail "doctor watch debounce"
+[[ "$doctor_output" == *"autowatch: 0"* ]] || fail "doctor autowatch"
+[[ "$doctor_output" == *"auto add roots: 0"* ]] || fail "doctor auto add roots"
+[[ "$doctor_output" == *"discovery mode: home-first"* ]] || fail "doctor discovery mode"
 [[ "$doctor_output" == *"watcher:"* ]] || fail "doctor watcher status"
 [[ "$doctor_output" == *"sqlite3:"* ]] || fail "doctor sqlite status"
 [[ "$doctor_output" == *"ai rank command:"* ]] || fail "doctor ai rank command status"
@@ -381,7 +527,7 @@ assert_eq "$bin_roots_output" "${HOME_DIR:A}" "bin wrapper runs roots before she
 
 READONLY_CONFIG="$ROOT/readonly-config"
 READONLY_HOME="$ROOT/readonly-home"
-mkdir -p "$READONLY_CONFIG" "$READONLY_HOME/Projects/missing-target"
+mkdir -p "$READONLY_CONFIG" "$READONLY_HOME/anywhere/missing-target"
 TO_CONFIG_HOME="$READONLY_CONFIG" HOME="$READONLY_HOME" zsh -fc '
   source "$1"
   _to_index_ensure_sqlite_schema >/dev/null || exit 1
