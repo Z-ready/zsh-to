@@ -52,6 +52,11 @@ mkdir -p \
   "$SEARCH_ROOT/app/services/backend" \
   "$SEARCH_ROOT/app/node_modules/backend" \
   "$SEARCH_ROOT/Assignment/source" \
+  "$SEARCH_ROOT/docs/README" \
+  "$SEARCH_ROOT/docs/assets" \
+  "$SEARCH_ROOT/media/audio" \
+  "$SEARCH_ROOT/media/photos" \
+  "$SEARCH_ROOT/media/space names" \
   "$SEARCH_ROOT/blog" \
   "$SEARCH_ROOT/stale-cache" \
   "$SEARCH_ROOT/reindex-stale" \
@@ -60,7 +65,16 @@ mkdir -p \
   "$SEARCH_ROOT/unicode/naïve-café" \
   "$SEARCH_ROOT/workspace-school" \
   "$SEARCH_ROOT/repos/nginx/.git" \
+  "$SEARCH_ROOT/history/hot-target" \
+  "$SEARCH_ROOT/history/cold-target" \
+  "$SEARCH_ROOT/history/hot-file" \
+  "$SEARCH_ROOT/history/cold-file" \
   "$SEARCH_ROOT/other/backend"
+
+touch \
+  "$SEARCH_ROOT/history/hot-file/project spec.md" \
+  "$SEARCH_ROOT/history/cold-file/project spec.md" \
+  "$SEARCH_ROOT/history/hot-file/音乐 mix.mp3"
 
 export HOME="$HOME_DIR"
 export TO_CONFIG_HOME="$CONFIG"
@@ -72,6 +86,8 @@ TO_SEARCH_PATH_FRAGMENTS=bad
 TO_FOLLOW_SYMLINKS=bad
 TO_ROOT_MODE=bad
 TO_WATCH_DEBOUNCE=bad
+TO_FRECENCY=bad
+TO_FRECENCY_THRESHOLD=bad
 EOF
 
 TO_ROOTS=("$HOME_DIR")
@@ -84,7 +100,9 @@ assert_eq "$TO_ROOT_MODE" "home" "invalid root mode falls back to home"
 assert_eq "$TO_WATCH_DEBOUNCE" "2" "invalid config watch debounce falls back to default"
 assert_eq "$TO_AUTOWATCH" "0" "invalid config autowatch falls back to default"
 assert_eq "$TO_AUTO_ADD_ROOTS" "0" "invalid config auto add roots falls back to default"
-assert_eq "$(to --version)" "to 1.2.1" "plugin version output"
+assert_eq "$TO_FRECENCY" "1" "invalid config frecency falls back to default"
+assert_eq "$TO_FRECENCY_THRESHOLD" "1" "invalid config frecency threshold falls back to default"
+assert_eq "$(to --version)" "to 1.2.2" "plugin version output"
 assert_eq "$(to roots)" "${HOME_DIR:A}" "source ignores stale in-shell roots"
 assert_eq "$TO_WATCH_DEBOUNCE" "2" "watch debounce default"
 assert_eq "$TO_AI_RANK_COMMAND" "" "ai rank command default"
@@ -260,6 +278,73 @@ EOF
   assert_path_eq "$helper_match" "$SEARCH_ROOT/Assignment" "sqlite query can use helper"
   [[ -s "$helper_log" ]] || fail "helper was not invoked"
   TO_HELPER="$old_helper"
+
+  hot_target="${SEARCH_ROOT:A}/history/hot-target"
+  cold_target="${SEARCH_ROOT:A}/history/cold-target"
+  now="$(_to_now)"
+  sqlite3 "$TO_INDEX_FILE" >/dev/null <<SQL
+insert or replace into history(path, visits, last_used) values($(sql_quote "$hot_target"), 4, $now);
+insert or replace into history(path, visits, last_used) values($(sql_quote "$cold_target"), 1, $(( now - 1209600 )));
+update dirs set last_used = $now + 10, hit_count = 20 where path = $(sql_quote "$cold_target");
+update dirs set last_used = 1, hit_count = 1 where path = $(sql_quote "$hot_target");
+SQL
+  frecency_match="$(_to_frecency_query_sqlite TO_ROOTS hot-target | head -n 1)"
+  assert_path_eq "$frecency_match" "$SEARCH_ROOT/history/hot-target" "frecency query returns visited directory"
+  cd "$ROOT" || fail "could not reset cwd"
+  to -r "$SEARCH_ROOT" hot-target
+  assert_path_eq "$PWD" "$SEARCH_ROOT/history/hot-target" "frecency jump runs before index and fallback"
+
+  mkdir -p "$SEARCH_ROOT/history/preferred/target" "$SEARCH_ROOT/history/indexed/target"
+  preferred_target="${SEARCH_ROOT:A}/history/preferred/target"
+  indexed_target="${SEARCH_ROOT:A}/history/indexed/target"
+  _to_index_upsert_dir "$preferred_target"
+  _to_index_upsert_dir "$indexed_target"
+  now="$(_to_now)"
+  sqlite3 "$TO_INDEX_FILE" >/dev/null <<SQL
+insert or replace into history(path, visits, last_used) values($(sql_quote "$preferred_target"), 3, $now);
+insert or replace into history(path, visits, last_used) values($(sql_quote "$indexed_target"), 1, $(( now - 1209600 )));
+update dirs set last_used = 1, hit_count = 1 where path = $(sql_quote "$preferred_target");
+update dirs set last_used = $now + 10, hit_count = 20 where path = $(sql_quote "$indexed_target");
+SQL
+  cd "$ROOT" || fail "could not reset cwd"
+  to -r "$SEARCH_ROOT" target
+  assert_path_eq "$PWD" "$SEARCH_ROOT/history/preferred/target" "frecency ranks same-name directories before index ranking"
+  sqlite3 "$TO_INDEX_FILE" >/dev/null <<SQL
+update dirs set last_used = 1, hit_count = 1 where path = $(sql_quote "$preferred_target");
+update dirs set last_used = $now + 10, hit_count = 20 where path = $(sql_quote "$indexed_target");
+SQL
+  TO_FRECENCY=0
+  cd "$ROOT" || fail "could not reset cwd"
+  to -r "$SEARCH_ROOT" target
+  assert_path_eq "$PWD" "$SEARCH_ROOT/history/indexed/target" "disabling frecency restores index ranking"
+  TO_FRECENCY=1
+
+  hot_file_parent="${SEARCH_ROOT:A}/history/hot-file"
+  cold_file_parent="${SEARCH_ROOT:A}/history/cold-file"
+  now="$(_to_now)"
+  sqlite3 "$TO_INDEX_FILE" >/dev/null <<SQL
+insert or replace into history(path, visits, last_used) values($(sql_quote "$hot_file_parent"), 5, $now);
+insert or replace into history(path, visits, last_used) values($(sql_quote "$cold_file_parent"), 1, $(( now - 1209600 )));
+update dirs set last_used = 1, hit_count = 1 where path = $(sql_quote "$hot_file_parent");
+update dirs set last_used = $now + 10, hit_count = 20 where path = $(sql_quote "$cold_file_parent");
+SQL
+  cd "$ROOT" || fail "could not reset cwd"
+  to -r "$SEARCH_ROOT" "project spec.md"
+  assert_path_eq "$PWD" "$SEARCH_ROOT/history/hot-file" "file-name jump ranks containing directories by frecency"
+  history_after_file="$(sqlite3 "$TO_INDEX_FILE" "select visits from history where path = $(sql_quote "$hot_file_parent");")"
+  (( history_after_file >= 6 )) || fail "file-name jump did not update frecency history"
+  ok "file-name jump updates frecency history"
+
+  cd "$ROOT" || fail "could not reset cwd"
+  to -r "$SEARCH_ROOT" "音乐 mix.mp3"
+  assert_path_eq "$PWD" "$SEARCH_ROOT/history/hot-file" "unicode and space file-name jump works with frecency"
+
+  old_only="${SEARCH_ROOT:A}/history/old-only"
+  mkdir -p "$old_only"
+  _to_index_upsert_dir "$old_only"
+  sqlite3 "$TO_INDEX_FILE" "insert or replace into history(path, visits, last_used) values($(sql_quote "$old_only"), 1, $(( now - 1209600 )));" >/dev/null
+  old_history_match="$(_to_frecency_query_sqlite TO_ROOTS old-only)"
+  assert_eq "$old_history_match" "" "old low-score history falls below frecency threshold"
 fi
 
 rmdir "$SEARCH_ROOT/stale-cache" || fail "could not remove stale-cache fixture"
@@ -331,6 +416,44 @@ assert_path_eq "$PWD" "$SEARCH_ROOT/app/services/backend" "file-name jump prefer
 if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]]; then
   file_parent_count="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from dirs where path = $(sql_quote "${SEARCH_ROOT:A}/app/services/backend");")"
   assert_eq "$file_parent_count" "1" "file-name jump caches containing directory"
+fi
+
+touch \
+  "$SEARCH_ROOT/docs/Guide.md" \
+  "$SEARCH_ROOT/docs/assets/README.md" \
+  "$SEARCH_ROOT/media/audio/音乐.mp3" \
+  "$SEARCH_ROOT/media/photos/证件照.jpg" \
+  "$SEARCH_ROOT/media/space names/cover photo.jpg"
+
+cd "$ROOT" || fail "could not reset cwd"
+to -r "$SEARCH_ROOT" README
+assert_path_eq "$PWD" "$SEARCH_ROOT/docs/README" "plain query prefers directory over file stem"
+
+cd "$ROOT" || fail "could not reset cwd"
+to -r "$SEARCH_ROOT" README.md
+assert_path_eq "$PWD" "$SEARCH_ROOT/docs/assets" "extension query jumps to containing directory"
+
+cd "$ROOT" || fail "could not reset cwd"
+to -r "$SEARCH_ROOT" Guide
+assert_path_eq "$PWD" "$SEARCH_ROOT/docs" "plain query falls back to matching file stem"
+
+cd "$ROOT" || fail "could not reset cwd"
+to -r "$SEARCH_ROOT" 音乐
+assert_path_eq "$PWD" "$SEARCH_ROOT/media/audio" "unicode file stem jump"
+
+cd "$ROOT" || fail "could not reset cwd"
+to -r "$SEARCH_ROOT" 证件照.jpg
+assert_path_eq "$PWD" "$SEARCH_ROOT/media/photos" "unicode extension file jump"
+
+cd "$ROOT" || fail "could not reset cwd"
+to -r "$SEARCH_ROOT" "cover photo"
+assert_path_eq "$PWD" "$SEARCH_ROOT/media/space names" "space-containing file stem jump"
+
+if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]]; then
+  readme_file_count="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from files where lower_name = 'readme.md' and parent = $(sql_quote "${SEARCH_ROOT:A}/docs/assets");")"
+  assert_eq "$readme_file_count" "1" "file-name jump writes file cache"
+  music_cached="$(_to_index_query_files_sqlite 音乐 | head -n 1)"
+  assert_path_eq "$music_cached" "$SEARCH_ROOT/media/audio" "unicode file cache can satisfy later lookup"
 fi
 
 AI_RANKER="$ROOT/ai-ranker"
@@ -509,6 +632,8 @@ doctor_output="$(to --doctor)"
 [[ "$doctor_output" == *"watch debounce: 2"* ]] || fail "doctor watch debounce"
 [[ "$doctor_output" == *"autowatch: 0"* ]] || fail "doctor autowatch"
 [[ "$doctor_output" == *"auto add roots: 0"* ]] || fail "doctor auto add roots"
+[[ "$doctor_output" == *"frecency: 1"* ]] || fail "doctor frecency"
+[[ "$doctor_output" == *"frecency threshold: 1"* ]] || fail "doctor frecency threshold"
 [[ "$doctor_output" == *"discovery mode: home-first"* ]] || fail "doctor discovery mode"
 [[ "$doctor_output" == *"watcher:"* ]] || fail "doctor watcher status"
 [[ "$doctor_output" == *"sqlite3:"* ]] || fail "doctor sqlite status"
@@ -520,7 +645,7 @@ bin_doctor_output="$("$TEST_DIR/../bin/to" --doctor)"
 [[ "$bin_doctor_output" == *"max depth: 8"* ]] || fail "bin wrapper doctor config defaults"
 ok "bin wrapper runs doctor before shell integration"
 
-assert_eq "$("$TEST_DIR/../bin/to" --version)" "to 1.2.1" "bin wrapper version output"
+assert_eq "$("$TEST_DIR/../bin/to" --version)" "to 1.2.2" "bin wrapper version output"
 
 bin_roots_output="$("$TEST_DIR/../bin/to" roots)"
 assert_eq "$bin_roots_output" "${HOME_DIR:A}" "bin wrapper runs roots before shell integration"

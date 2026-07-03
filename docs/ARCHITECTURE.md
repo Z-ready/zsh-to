@@ -19,12 +19,13 @@ query
   -> built-in aliases
   -> user aliases
   -> workspaces
+  -> frecency history
   -> SQLite or helper query
   -> TSV fallback
   -> live fd/find search
   -> interactive selection when needed
   -> cd
-  -> recent/index bookkeeping
+  -> recent/frecency/index bookkeeping
 ```
 
 ## Persistent state
@@ -38,6 +39,12 @@ By default, all state lives under `~/.config/to`:
 - `workspaces`: text fallback for workspaces.
 - `recent`: text fallback for recent destinations.
 
+The SQLite database also owns the frecency history table:
+`history(path, visits, last_used)`. Successful jumps update one history row.
+Queries use that table before the directory index when `TO_FRECENCY=1`, then
+fall back to index and live discovery if no history score reaches
+`TO_FRECENCY_THRESHOLD`.
+
 `TO_CONFIG_HOME` can move this state directory.
 
 ## Current module boundaries
@@ -47,7 +54,7 @@ Homebrew installation and `eval "$(to init zsh)"` simple, but the file has clear
 internal areas:
 
 1. Config defaults and path expansion.
-2. Root, alias, workspace, and recent state.
+2. Root, alias, workspace, recent, and frecency state.
 3. SQLite schema and migration.
 4. Index collection, refresh, pruning, and query.
 5. Matching and ranking.

@@ -3,7 +3,7 @@
 `to` is an **exploratory directory jumper for zsh**.
 
 It helps you jump to local folders by name, path fragment, keyword, workspace,
-alias, recent destination, or Git repository.
+alias, recent destination, frecency history, file name, or Git repository.
 
 ```zsh
 to backend
@@ -12,9 +12,9 @@ to app backend
 to repo nginx
 ```
 
-zoxide optimizes history: it gets better after you visit directories.
-`to` optimizes discovery: it indexes configured roots and finds matching
-folders even if you have never visited them before.
+`to` combines zoxide-style history with discovery. Frequently and recently
+used directories jump first, while the configured-root index and live fallback
+still find folders and files you have never visited before.
 
 [Getting started](#getting-started) • [Installation](#installation) •
 [Usage](#usage) • [Configuration](#configuration) •
@@ -74,6 +74,8 @@ to the directory that contains it:
 
 ```zsh
 to package.json
+to "project spec.md"
+to 音乐.mp3
 ```
 
 Check the installed version:
@@ -259,6 +261,7 @@ Jump to the directory containing a file:
 ```zsh
 to Cargo.toml
 to package.json
+to 音乐.mp3
 ```
 
 Force interactive selection:
@@ -464,12 +467,19 @@ Resolution order:
 1. Built-in aliases.
 2. User aliases.
 3. Workspaces.
-4. SQLite exact-name matches.
-5. SQLite Git repo matches.
-6. SQLite token matches for multi-word queries.
-7. SQLite path-fragment matches.
-8. Live directory discovery with `fd`, with `find` fallback.
-9. Exact file-name discovery, jumping to the containing directory.
+4. Frecency history for visited directories.
+5. SQLite exact-name matches.
+6. SQLite Git repo matches.
+7. SQLite token matches for multi-word queries.
+8. SQLite path-fragment matches.
+9. Live directory discovery with `fd`, with `find` fallback.
+10. File-name discovery, jumping to the containing directory.
+
+Frecency means frequency multiplied by recency. A directory starts with one
+visit, each successful jump adds another visit, and recent visits weigh more:
+within an hour counts most, within a day counts strongly, and old visits fade.
+If no history match reaches `TO_FRECENCY_THRESHOLD`, `to` falls back to the
+normal index and live search pipeline.
 
 Exact directory names win for plain single-word queries:
 
@@ -492,17 +502,29 @@ Multi-word queries require every token to appear somewhere in the path:
 to app backend
 ```
 
-File-name jumps are exact-name, on-demand searches:
+File-name jumps run after exact directory matching:
 
 ```zsh
 to pyproject.toml
 to README.md
+to 音乐.mp3
+to "cover photo.jpg"
+```
+
+Queries with an extension search for that exact file name. Plain names prefer
+directories first; if no directory matches, `to` searches for either that exact
+file name or files with the same stem:
+
+```zsh
+to README     # directory named README wins; otherwise README or README.*
+to 证件照     # directory named 证件照 wins; otherwise 证件照 or 证件照.*
 ```
 
 If multiple directories contain the same file name, `to` prefers the directory
-you used most recently, then the one you use most often. File names are not
-stored in the main index; the containing directory is cached after a successful
-jump.
+with the highest frecency score, then the old ranking signals: recent use,
+frequent use, shallower paths, and shorter paths. File-name hits are cached on
+demand, so repeated jumps can use SQLite before falling back to live filesystem
+search.
 
 Plain single-word path-fragment matching is disabled by default. Enable it
 only if you want broader results:
@@ -543,6 +565,8 @@ TO_ROOT_MODE=home
 TO_WATCH_DEBOUNCE=2
 TO_AUTOWATCH=0
 TO_AUTO_ADD_ROOTS=0
+TO_FRECENCY=1
+TO_FRECENCY_THRESHOLD=1
 TO_AI_COMMAND=""
 TO_AI_RANK_COMMAND=""
 TO_HELPER=""
@@ -560,6 +584,8 @@ Options:
 | `TO_WATCH_DEBOUNCE` | `2` | Seconds to wait before watcher reindex |
 | `TO_AUTOWATCH` | `0` | Start a background watcher when zsh integration loads |
 | `TO_AUTO_ADD_ROOTS` | `0` | Add temporary-search parent roots after successful external jumps |
+| `TO_FRECENCY` | `1` | Prefer frequently and recently visited directories before index fallback |
+| `TO_FRECENCY_THRESHOLD` | `1` | Minimum history score required before falling back to index/live search |
 | `TO_AI_COMMAND` | empty | External command for `to ai <query...>` |
 | `TO_AI_RANK_COMMAND` | empty | External command that ranks candidates from stdin |
 | `TO_HELPER` | auto | Explicit path to `to-helper` |
@@ -604,12 +630,13 @@ commands you would be comfortable running directly in your shell.
 `to` does not run a background daemon by default. Idle cost is effectively
 zero unless you opt in to watching.
 
-Normal jumps are index-first:
+Normal jumps are history-first, then index-first:
 
 ```text
-query -> SQLite -> validate path -> cd
-                  -> fallback to fd/find on miss or stale path
-                  -> write fresh result back to SQLite
+query -> frecency history -> validate path -> cd
+      -> SQLite index -> validate path -> cd
+      -> fallback to fd/find on miss or stale path
+      -> write fresh result back to SQLite
 ```
 
 Fallback search runs only inside the configured roots, never across the whole
@@ -622,29 +649,37 @@ to new-service
 ```
 
 That first jump writes the directory back to the index, so later queries can
-resolve from SQLite without a live scan.
+resolve from history or SQLite without a live scan.
 
-File-name jumps use the same roots and exclusions, but they scan file names on
-demand instead of indexing every file. This keeps the SQLite database small and
-avoids turning `to` into a full content indexer.
+File-name jumps use the same roots and exclusions. `to` does not eagerly index
+every file during startup or reindex; it looks up cached file hits first, then
+scans file names on demand and records successful hits in SQLite. This keeps
+the database small and avoids turning `to` into a full content indexer.
 
 The SQLite index stores:
 
 ```sql
 dirs(id, path, name, parent, depth, is_git, last_seen, last_used, hit_count)
 tokens(token, dir_id)
+files(path, name, stem, parent, depth, last_seen)
+history(path, visits, last_used)
 roots(path, mtime, config_key, last_indexed)
 aliases(name, path)
 workspaces(name, path)
 recent(path, last_used)
 ```
 
-Successful jumps update `hit_count` and `last_used`, so ranking improves with
-use. Results are ordered roughly as:
+Successful jumps update directory history with one lightweight row write, plus
+the existing `hit_count` and `last_used` index data. Results are ordered
+roughly as:
 
 ```text
-exact name > recent/frequent > shallower depth > shorter path
+exact name > frecency > recent/frequent > shallower depth > shorter path
 ```
+
+Set `TO_FRECENCY=0` if you want the older pure index/live-search behavior.
+`TO_FRECENCY_THRESHOLD` controls when weak old history is ignored and the
+normal fallback search is used instead.
 
 `to --reindex` is incremental for SQLite. It records root mtime and
 index-affecting config, skips unchanged roots, refreshes changed roots, adds

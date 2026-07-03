@@ -4,6 +4,8 @@
 : ${TO_AUTOWATCH:=0}
 : ${TO_AUTO_ADD_ROOTS:=0}
 : ${TO_ROOT_MODE:=home}
+: ${TO_FRECENCY:=1}
+: ${TO_FRECENCY_THRESHOLD:=1}
 
 typeset -ga TO_ROOTS
 typeset -ga TO_EXCLUDES
@@ -15,10 +17,12 @@ typeset -g TO_WATCH_DEBOUNCE
 typeset -g TO_AUTOWATCH
 typeset -g TO_AUTO_ADD_ROOTS
 typeset -g TO_ROOT_MODE
+typeset -g TO_FRECENCY
+typeset -g TO_FRECENCY_THRESHOLD
 typeset -g _TO_SQLITE_SCHEMA_READY_FILE
 typeset -g _TO_AUTOWATCH_PID
 typeset -g _TO_AUTOWATCH_PID_FILE
-typeset -r _TO_VERSION="1.2.1"
+typeset -r _TO_VERSION="1.2.2"
 
 _to_apply_positive_int_default() {
   local name="$1"
@@ -63,6 +67,18 @@ _to_apply_root_mode_default() {
   esac
 }
 
+_to_apply_nonnegative_number_default() {
+  local name="$1"
+  local default="$2"
+  local value="${(P)name}"
+
+  if [[ "$value" == <-> || "$value" == <->.<-> ]]; then
+    typeset -g "$name=$value"
+  else
+    typeset -g "$name=$default"
+  fi
+}
+
 _to_apply_config_defaults() {
   _to_apply_positive_int_default TO_MAX_DEPTH 8
   _to_apply_positive_int_default TO_INTERACTIVE_THRESHOLD 3
@@ -70,6 +86,8 @@ _to_apply_config_defaults() {
   _to_apply_bool_default TO_FOLLOW_SYMLINKS 0
   _to_apply_bool_default TO_AUTOWATCH 0
   _to_apply_bool_default TO_AUTO_ADD_ROOTS 0
+  _to_apply_bool_default TO_FRECENCY 1
+  _to_apply_nonnegative_number_default TO_FRECENCY_THRESHOLD 1
   _to_apply_nonnegative_int_default TO_WATCH_DEBOUNCE 2
   _to_apply_root_mode_default
 }
@@ -93,6 +111,8 @@ _to_apply_config_defaults() {
 : ${TO_AUTOWATCH:=0}
 : ${TO_AUTO_ADD_ROOTS:=0}
 : ${TO_ROOT_MODE:=home}
+: ${TO_FRECENCY:=1}
+: ${TO_FRECENCY_THRESHOLD:=1}
 _TO_AUTOWATCH_PID_FILE="$TO_CONFIG_HOME/watch.pid"
 
 TO_ROOTS=()
@@ -223,6 +243,22 @@ _to_dir_index_row() {
     "$dir" "$name" "${(L)name}" "$parent" "$depth" "$is_git" "$now" 0 0
 }
 
+_to_file_stem() {
+  local name="$1"
+
+  if [[ "$name" == *.* && "$name" != .* ]]; then
+    print -r -- "${name%.*}"
+  else
+    print -r -- "$name"
+  fi
+}
+
+_to_query_has_extension() {
+  local query="$1"
+
+  [[ "$query" == *.* && "$query" != .* ]]
+}
+
 _to_root_mtime() {
   local value
 
@@ -347,7 +383,7 @@ _to_index_collect_tokens_tsv() {
 }
 
 _to_index_ensure_sqlite_schema() {
-  local has_id has_parent has_depth has_last_seen has_last_used has_hit_count has_token_dir_id has_token_path has_config_key
+  local has_id has_parent has_depth has_last_seen has_last_used has_hit_count has_token_dir_id has_token_path has_config_key has_files has_history
 
   command -v sqlite3 >/dev/null 2>&1 || return 1
   if [[ "$_TO_SQLITE_SCHEMA_READY_FILE" == "$TO_INDEX_FILE" && -r "$TO_INDEX_FILE" ]]; then
@@ -391,6 +427,26 @@ create table if not exists recent(
   path text primary key,
   last_used integer not null
 );
+create table if not exists history(
+  path text primary key,
+  visits integer not null default 0,
+  last_used integer not null default 0
+);
+create table if not exists files(
+  path text primary key,
+  name text not null,
+  lower_name text not null,
+  stem text not null,
+  lower_stem text not null,
+  parent text not null,
+  depth integer not null default 0,
+  last_seen integer not null default 0
+);
+create table if not exists history(
+  path text primary key,
+  visits integer not null default 0,
+  last_used integer not null default 0
+);
 SQL
   has_id="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from pragma_table_info('dirs') where name = 'id';" 2>/dev/null)"
   has_parent="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from pragma_table_info('dirs') where name = 'parent';" 2>/dev/null)"
@@ -401,6 +457,8 @@ SQL
   has_token_dir_id="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from pragma_table_info('tokens') where name = 'dir_id';" 2>/dev/null)"
   has_token_path="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from pragma_table_info('tokens') where name = 'path';" 2>/dev/null)"
   has_config_key="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from pragma_table_info('roots') where name = 'config_key';" 2>/dev/null)"
+  has_files="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from sqlite_master where type = 'table' and name = 'files';" 2>/dev/null)"
+  has_history="$(sqlite3 "$TO_INDEX_FILE" "select count(*) from sqlite_master where type = 'table' and name = 'history';" 2>/dev/null)"
 
   if [[ "$has_id" != 1 ]]; then
     [[ "$has_parent" == 1 ]] || sqlite3 "$TO_INDEX_FILE" "alter table dirs add column parent text not null default '';" >/dev/null 2>/dev/null
@@ -449,6 +507,23 @@ SQL
   [[ "$has_last_used" == 1 ]] || sqlite3 "$TO_INDEX_FILE" "alter table dirs add column last_used integer not null default 0;" >/dev/null 2>/dev/null
   [[ "$has_hit_count" == 1 ]] || sqlite3 "$TO_INDEX_FILE" "alter table dirs add column hit_count integer not null default 0;" >/dev/null 2>/dev/null
   [[ "$has_config_key" == 1 ]] || sqlite3 "$TO_INDEX_FILE" "alter table roots add column config_key text not null default '';" >/dev/null 2>/dev/null
+  if [[ "$has_files" != 1 ]]; then
+    sqlite3 "$TO_INDEX_FILE" >/dev/null 2>/dev/null <<SQL || return 1
+create table files(
+  path text primary key,
+  name text not null,
+  lower_name text not null,
+  stem text not null,
+  lower_stem text not null,
+  parent text not null,
+  depth integer not null default 0,
+  last_seen integer not null default 0
+);
+SQL
+  fi
+  if [[ "$has_history" != 1 ]]; then
+    sqlite3 "$TO_INDEX_FILE" "create table history(path text primary key, visits integer not null default 0, last_used integer not null default 0);" >/dev/null 2>/dev/null || return 1
+  fi
 
   if [[ "$has_token_dir_id" != 1 ]]; then
     if [[ "$has_token_path" == 1 ]]; then
@@ -482,6 +557,11 @@ create index if not exists idx_tokens_token on tokens(token);
 create index if not exists idx_tokens_dir_id on tokens(dir_id);
 create index if not exists idx_roots_last_indexed on roots(last_indexed);
 create index if not exists idx_recent_last_used on recent(last_used);
+create index if not exists idx_files_lower_name on files(lower_name);
+create index if not exists idx_files_lower_stem on files(lower_stem);
+create index if not exists idx_files_parent on files(parent);
+create index if not exists idx_history_last_used on history(last_used);
+create index if not exists idx_history_path on history(path);
 SQL
   _TO_SQLITE_SCHEMA_READY_FILE="$TO_INDEX_FILE"
 }
@@ -685,6 +765,126 @@ _to_recent_dirs() {
   done < "$TO_RECENT_FILE"
 }
 
+_to_frecency_score_sql() {
+  local now="$1"
+
+  print -r -- "case when $now - last_used <= 3600 then visits * 4.0 when $now - last_used <= 86400 then visits * 2.0 when $now - last_used <= 604800 then visits * 0.5 else visits * 0.25 end"
+}
+
+_to_record_frecency() {
+  local dir="${1:A}"
+  local now
+
+  (( TO_FRECENCY == 1 )) || return 0
+  [[ -d "$dir" ]] || return 0
+  command -v sqlite3 >/dev/null 2>&1 || return 0
+  _to_index_ensure_sqlite_schema >/dev/null 2>&1 || return 0
+  now="$(_to_now)"
+
+  sqlite3 "$TO_INDEX_FILE" >/dev/null 2>/dev/null <<SQL
+insert into history(path, visits, last_used)
+values($(_to_sql_quote "$dir"), 1, $now)
+on conflict(path) do update set
+  visits = history.visits + 1,
+  last_used = excluded.last_used;
+delete from history
+where not exists (select 1 from dirs d where d.path = history.path)
+  and last_used < $(( now - 604800 ));
+delete from history
+where $(_to_frecency_score_sql "$now") < $TO_FRECENCY_THRESHOLD
+  and last_used < $(( now - 604800 ));
+SQL
+}
+
+_to_dir_is_under_roots_ref() {
+  local roots_ref="$1"
+  local dir="${2:A}"
+  local -a candidate_roots
+  local root
+
+  eval "candidate_roots=(\"\${${roots_ref}[@]}\")"
+  for root in "${candidate_roots[@]}"; do
+    root="${root:A}"
+    [[ "$dir" == "$root" || "$dir" == "$root"/* ]] && return 0
+  done
+
+  return 1
+}
+
+_to_frecency_filter_roots() {
+  local roots_ref="$1"
+  local dir
+
+  while IFS= read -r dir; do
+    [[ -d "$dir" ]] || {
+      _to_index_delete_path "$dir"
+      command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]] \
+        && sqlite3 "$TO_INDEX_FILE" "delete from history where path = $(_to_sql_quote "$dir");" >/dev/null 2>/dev/null
+      continue
+    }
+    _to_dir_is_under_roots_ref "$roots_ref" "$dir" && print -r -- "${dir:A}"
+  done
+}
+
+_to_frecency_query_sqlite() {
+  local roots_ref="$1"
+  shift
+  local -a queries clauses
+  local query first now score_sql where sql threshold
+
+  (( TO_FRECENCY == 1 )) || return 1
+  command -v sqlite3 >/dev/null 2>&1 || return 1
+  [[ -r "$TO_INDEX_FILE" ]] || return 1
+  _to_index_ensure_sqlite_schema || return 1
+  queries=("${(@L)@}")
+  (( ${#queries} > 0 )) || return 1
+  if (( ${#queries} == 1 )) && _to_query_has_extension "$queries[1]"; then
+    return 1
+  fi
+
+  first="${queries[1]}"
+  now="$(_to_now)"
+  score_sql="$(_to_frecency_score_sql "$now")"
+  threshold="$TO_FRECENCY_THRESHOLD"
+  if (( ${#queries} == 1 )) && [[ "$queries[1]" != */* ]] && (( TO_SEARCH_PATH_FRAGMENTS == 0 )); then
+    clauses+=("lower(h.path) like $(_to_sql_quote "%/$queries[1]")")
+  else
+    for query in "${queries[@]}"; do
+      clauses+=("lower(h.path) like $(_to_sql_quote "%$query%")")
+    done
+  fi
+  where="${(j: and :)clauses}"
+
+  sql="select h.path from history h where $where and ($score_sql) >= $threshold order by case when lower(h.path) like $(_to_sql_quote "%/$first") then 0 else 1 end, ($score_sql) desc, h.last_used desc, length(h.path), h.path limit 50;"
+  sqlite3 -noheader "$TO_INDEX_FILE" "$sql" 2>/dev/null | _to_frecency_filter_roots "$roots_ref"
+}
+
+_to_frecency_fields() {
+  local dir="${1:A}"
+  local now score_sql fields
+
+  (( TO_FRECENCY == 1 )) || {
+    print -r -- "0	0	0"
+    return
+  }
+  command -v sqlite3 >/dev/null 2>&1 || {
+    print -r -- "0	0	0"
+    return
+  }
+  [[ -r "$TO_INDEX_FILE" ]] || {
+    print -r -- "0	0	0"
+    return
+  }
+  _to_index_ensure_sqlite_schema >/dev/null 2>&1 || {
+    print -r -- "0	0	0"
+    return
+  }
+  now="$(_to_now)"
+  score_sql="$(_to_frecency_score_sql "$now")"
+  fields="$(sqlite3 -noheader "$TO_INDEX_FILE" "select printf('%.6f', $score_sql) || char(9) || last_used || char(9) || visits from history where path = $(_to_sql_quote "$dir");" 2>/dev/null)"
+  [[ -n "$fields" ]] && print -r -- "$fields" || print -r -- "0	0	0"
+}
+
 _to_exclude_args_fd() {
   local item
   for item in "${TO_EXCLUDES[@]}"; do
@@ -776,24 +976,42 @@ _to_search_exact_file_with_fd() {
   local root="$1"
   local query="$2"
   local limit="${3:-100}"
+  local pattern
   local -a exclude_args follow_args
 
   exclude_args=("${(@f)$(_to_exclude_args_fd)}")
   (( TO_FOLLOW_SYMLINKS == 1 )) && follow_args=(--follow)
-  fd --type f --hidden "${follow_args[@]}" --max-depth "$TO_MAX_DEPTH" \
-    --glob --ignore-case --max-results "$limit" "${exclude_args[@]}" "$query" "$root" 2>/dev/null
+  if _to_query_has_extension "$query"; then
+    fd --type f --hidden "${follow_args[@]}" --max-depth "$TO_MAX_DEPTH" \
+      --glob --ignore-case --max-results "$limit" "${exclude_args[@]}" "$query" "$root" 2>/dev/null
+  else
+    for pattern in "$query" "$query.*"; do
+      fd --type f --hidden "${follow_args[@]}" --max-depth "$TO_MAX_DEPTH" \
+        --glob --ignore-case --max-results "$limit" "${exclude_args[@]}" "$pattern" "$root" 2>/dev/null
+    done
+  fi
 }
 
 _to_search_exact_file_with_find() {
   local root="$1"
   local query="$2"
   local -a prune_expr
+  local stem_pattern
 
   prune_expr=("${(@f)$(_to_prune_expr_find)}")
+  stem_pattern="${query}.*"
   if (( ${#prune_expr} > 0 )); then
-    find "$root" -maxdepth "$TO_MAX_DEPTH" \( "${prune_expr[@]}" \) -prune -o -type f -iname "$query" -print 2>/dev/null
+    if _to_query_has_extension "$query"; then
+      find "$root" -maxdepth "$TO_MAX_DEPTH" \( "${prune_expr[@]}" \) -prune -o -type f -iname "$query" -print 2>/dev/null
+    else
+      find "$root" -maxdepth "$TO_MAX_DEPTH" \( "${prune_expr[@]}" \) -prune -o -type f \( -iname "$query" -o -iname "$stem_pattern" \) -print 2>/dev/null
+    fi
   else
-    find "$root" -maxdepth "$TO_MAX_DEPTH" -type f -iname "$query" -print 2>/dev/null
+    if _to_query_has_extension "$query"; then
+      find "$root" -maxdepth "$TO_MAX_DEPTH" -type f -iname "$query" -print 2>/dev/null
+    else
+      find "$root" -maxdepth "$TO_MAX_DEPTH" -type f \( -iname "$query" -o -iname "$stem_pattern" \) -print 2>/dev/null
+    fi
   fi
 }
 
@@ -805,6 +1023,21 @@ _to_search_exact_file() {
     _to_search_exact_file_with_fd "$root" "$query"
   else
     _to_search_exact_file_with_find "$root" "$query"
+  fi
+}
+
+_to_file_matches_query() {
+  local file="$1"
+  local query="${(L)2}"
+  local name stem
+
+  name="${(L)${file:t}}"
+  stem="$(_to_file_stem "${file:t}")"
+  stem="${(L)stem}"
+  if _to_query_has_extension "$query"; then
+    [[ "$name" == "$query" ]]
+  else
+    [[ "$name" == "$query" || "$stem" == "$query" ]]
   fi
 }
 
@@ -903,6 +1136,16 @@ create table if not exists recent(
   path text primary key,
   last_used integer not null
 );
+create table if not exists files(
+  path text primary key,
+  name text not null,
+  lower_name text not null,
+  stem text not null,
+  lower_stem text not null,
+  parent text not null,
+  depth integer not null default 0,
+  last_seen integer not null default 0
+);
 create table dirs(
   id integer primary key,
   path text unique not null,
@@ -957,6 +1200,11 @@ create index idx_dirs_last_used on dirs(last_used);
 create index idx_dirs_path on dirs(path);
 create index idx_tokens_token on tokens(token);
 create index idx_tokens_dir_id on tokens(dir_id);
+create index idx_files_lower_name on files(lower_name);
+create index idx_files_lower_stem on files(lower_stem);
+create index idx_files_parent on files(parent);
+create index idx_history_last_used on history(last_used);
+create index idx_history_path on history(path);
 pragma journal_mode=delete;
 SQL
   _TO_SQLITE_SCHEMA_READY_FILE="$TO_INDEX_FILE"
@@ -1015,6 +1263,9 @@ create table __to_import_tokens(
 .import ${tmp} __to_import_dirs
 .import ${tokens_tmp} __to_import_tokens
 begin transaction;
+delete from files
+where path = $(_to_sql_quote "$root")
+   or path like $(_to_sql_quote "$root_like");
 delete from tokens
 where dir_id in (
   select id from dirs where path = $(_to_sql_quote "$root") or path like $(_to_sql_quote "$root_like")
@@ -1068,11 +1319,25 @@ where dir_id in (
   join roots r on d.path = r.path or d.path like r.path || '/%'
   where r.path not in ($active_list)
 );
+delete from files
+where path in (
+  select f.path
+  from files f
+  join roots r on f.path = r.path or f.path like r.path || '/%'
+  where r.path not in ($active_list)
+);
 delete from dirs
 where path in (
   select d.path
   from dirs d
   join roots r on d.path = r.path or d.path like r.path || '/%'
+  where r.path not in ($active_list)
+);
+delete from history
+where path in (
+  select h.path
+  from history h
+  join roots r on h.path = r.path or h.path like r.path || '/%'
   where r.path not in ($active_list)
 );
 delete from roots where path not in ($active_list);
@@ -1242,6 +1507,15 @@ _to_index_delete_path() {
   mv "$tmp" "$TO_INDEX_TSV_FILE"
 }
 
+_to_index_delete_file_path() {
+  local target_path="${1:A}"
+
+  if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]]; then
+    _to_index_ensure_sqlite_schema || return 0
+    sqlite3 "$TO_INDEX_FILE" "delete from files where path = $(_to_sql_quote "$target_path");" >/dev/null 2>/dev/null
+  fi
+}
+
 _to_index_filter_existing() {
   local candidate_path
 
@@ -1253,6 +1527,81 @@ _to_index_filter_existing() {
       _to_index_delete_path "$candidate_path"
     fi
   done
+}
+
+_to_index_filter_existing_files_to_parents() {
+  local file_path parent
+  local -a parents seen
+
+  for file_path in "$@"; do
+    [[ -n "$file_path" ]] || continue
+    if [[ -f "$file_path" ]]; then
+      parent="${file_path:A:h}"
+      [[ -d "$parent" ]] || continue
+      if (( ${seen[(Ie)$parent]} == 0 )); then
+        seen+=("$parent")
+        parents+=("$parent")
+      fi
+    else
+      _to_index_delete_file_path "$file_path"
+    fi
+  done
+
+  (( ${#parents} > 0 )) || return 1
+  printf '%s\n' "${parents[@]}"
+}
+
+_to_index_query_files_sqlite() {
+  local query="${(L)1}"
+  local sql
+  local -a matches
+
+  [[ -r "$TO_INDEX_FILE" ]] || return 1
+  _to_index_ensure_sqlite_schema || return 1
+
+  if _to_query_has_extension "$query"; then
+    sql="select path from files where lower_name = $(_to_sql_quote "$query") order by depth asc, length(parent), parent, path limit 100;"
+  else
+    sql="select path from files where lower_name = $(_to_sql_quote "$query") or lower_stem = $(_to_sql_quote "$query") order by case when lower_name = $(_to_sql_quote "$query") then 0 else 1 end, depth asc, length(parent), parent, path limit 100;"
+  fi
+
+  matches=("${(@f)$(sqlite3 -noheader "$TO_INDEX_FILE" "$sql" 2>/dev/null)}")
+  _to_index_filter_existing_files_to_parents "${matches[@]}"
+}
+
+_to_index_upsert_file_sqlite() {
+  local file="${1:A}"
+  local now="$(_to_now)"
+  local name stem parent depth
+
+  [[ -f "$file" ]] || return 0
+  _to_index_ensure_sqlite_schema || return 0
+  name="${file:t}"
+  stem="$(_to_file_stem "$name")"
+  parent="${file:h}"
+  depth="$(_to_dir_depth "$parent")"
+
+  sqlite3 "$TO_INDEX_FILE" >/dev/null 2>/dev/null <<SQL
+insert or replace into files(path, name, lower_name, stem, lower_stem, parent, depth, last_seen)
+values(
+  $(_to_sql_quote "$file"),
+  $(_to_sql_quote "$name"),
+  $(_to_sql_quote "${(L)name}"),
+  $(_to_sql_quote "$stem"),
+  $(_to_sql_quote "${(L)stem}"),
+  $(_to_sql_quote "$parent"),
+  $depth,
+  $now
+);
+SQL
+}
+
+_to_index_upsert_file() {
+  local file="${1:A}"
+
+  [[ -f "$file" ]] || return 0
+  command -v sqlite3 >/dev/null 2>&1 || return 0
+  _to_index_upsert_file_sqlite "$file"
 }
 
 _to_helper_query() {
@@ -1432,6 +1781,7 @@ _to_after_cd() {
 
   [[ -d "$dir" ]] || return 0
   _to_record_recent "$dir"
+  _to_record_frecency "$dir"
   _to_index_upsert_dir "$dir"
 }
 
@@ -1443,7 +1793,7 @@ _to_first_exact_match() {
 
   [[ "$query" != */* ]] || return 1
 
-  search_roots=("${(@P)roots_ref}")
+  eval "search_roots=(\"\${${roots_ref}[@]}\")"
 
   matches=("${(@f)$(_to_index_query exact "$query")}")
   matches=("${(@)matches:#}")
@@ -1626,13 +1976,38 @@ _to_dir_usage_fields() {
   print -r -- "${recent_time:-0}	0"
 }
 
+_to_dir_rank_depth() {
+  local dir="${1:A}"
+  local depth
+
+  if command -v sqlite3 >/dev/null 2>&1 && [[ -r "$TO_INDEX_FILE" ]]; then
+    _to_index_ensure_sqlite_schema >/dev/null 2>&1
+    depth="$(sqlite3 -noheader "$TO_INDEX_FILE" "select depth from dirs where path = $(_to_sql_quote "$dir");" 2>/dev/null)"
+    [[ "$depth" == <-> ]] && {
+      print -r -- "$depth"
+      return
+    }
+  fi
+
+  _to_dir_depth "$dir"
+}
+
 _to_dir_is_better_rank() {
   local candidate="$1"
   local incumbent="$2"
   local candidate_last candidate_hits incumbent_last incumbent_hits
+  local candidate_score incumbent_score candidate_frecency incumbent_frecency
+  local candidate_depth incumbent_depth
   local candidate_fields incumbent_fields
 
   [[ -n "$incumbent" ]] || return 0
+  candidate_frecency="$(_to_frecency_fields "$candidate")"
+  incumbent_frecency="$(_to_frecency_fields "$incumbent")"
+  candidate_score="${candidate_frecency%%	*}"
+  incumbent_score="${incumbent_frecency%%	*}"
+  (( ${candidate_score:-0} > ${incumbent_score:-0} )) && return 0
+  (( ${candidate_score:-0} < ${incumbent_score:-0} )) && return 1
+
   candidate_fields="$(_to_dir_usage_fields "$candidate")"
   incumbent_fields="$(_to_dir_usage_fields "$incumbent")"
   candidate_last="${candidate_fields%%	*}"
@@ -1644,6 +2019,10 @@ _to_dir_is_better_rank() {
   (( ${candidate_last:-0} < ${incumbent_last:-0} )) && return 1
   (( ${candidate_hits:-0} > ${incumbent_hits:-0} )) && return 0
   (( ${candidate_hits:-0} < ${incumbent_hits:-0} )) && return 1
+  candidate_depth="$(_to_dir_rank_depth "$candidate")"
+  incumbent_depth="$(_to_dir_rank_depth "$incumbent")"
+  (( ${candidate_depth:-0} < ${incumbent_depth:-0} )) && return 0
+  (( ${candidate_depth:-0} > ${incumbent_depth:-0} )) && return 1
   (( ${#candidate} < ${#incumbent} ))
 }
 
@@ -1674,16 +2053,26 @@ _to_rank_dirs_by_usage() {
 _to_collect_file_parent_matches() {
   local roots_ref="$1"
   local query="$2"
-  local -a search_roots parents ranked seen files
+  local -a search_roots parents ranked seen files cached
   local root file parent key
 
   [[ "$query" != */* ]] || return 1
-  search_roots=("${(@P)roots_ref}")
+  eval "search_roots=(\"\${${roots_ref}[@]}\")"
+
+  cached=("${(@f)$(_to_index_query_files_sqlite "$query")}")
+  cached=("${(@)cached:#}")
+  if (( ${#cached} > 0 )); then
+    ranked=("${(@f)$(_to_rank_dirs_by_usage "${cached[@]}")}")
+    printf '%s\n' "${ranked[@]}"
+    return
+  fi
+
   for root in "${search_roots[@]}"; do
     [[ -d "$root" ]] || continue
     files=("${(@f)$(_to_search_exact_file "$root" "$query")}")
     for file in "${files[@]}"; do
       [[ -f "$file" ]] || continue
+      _to_file_matches_query "$file" "$query" || continue
       parent="${file:A:h}"
       [[ -d "$parent" ]] || continue
       key="${parent:A}"
@@ -1691,6 +2080,8 @@ _to_collect_file_parent_matches() {
         seen+=("$key")
         parents+=("$key")
       fi
+      _to_index_upsert_dir "$parent"
+      _to_index_upsert_file "$file"
     done
   done
 
@@ -1706,7 +2097,7 @@ _to_collect_matches_for_mode() {
 
   roots_ref="$1"
   mode="$2"
-  search_roots=("${(@P)roots_ref}")
+  eval "search_roots=(\"\${${roots_ref}[@]}\")"
   shift 2
   queries=("$@")
 
@@ -1772,6 +2163,13 @@ _to_collect_matches() {
   local -a queries matches
 
   queries=("$@")
+
+  matches=("${(@f)$(_to_frecency_query_sqlite "$roots_ref" "${queries[@]}")}")
+  matches=("${(@)matches:#}")
+  if (( ${#matches} > 0 )); then
+    printf '%s\n' "${matches[@]}"
+    return
+  fi
 
   if (( ${#queries} == 1 )); then
     matches=("${(@f)$(_to_index_query exact "${queries[@]}")}")
@@ -1914,6 +2312,11 @@ _to_resolve() {
     fi
 
     if [[ "$force_interactive" != 1 && "$queries[1]" != */* ]]; then
+      exact_target="$(_to_frecency_query_sqlite roots "$queries[1]" | head -n 1)"
+      if [[ -n "$exact_target" ]]; then
+        print -r -- "$exact_target"
+        return
+      fi
       exact_target="$(_to_first_exact_match roots "$queries[1]")"
       if [[ -n "$exact_target" ]]; then
         print -r -- "$exact_target"
@@ -2107,6 +2510,8 @@ _to_doctor() {
   print -r -- "watch debounce: $TO_WATCH_DEBOUNCE"
   print -r -- "autowatch: $TO_AUTOWATCH"
   print -r -- "auto add roots: $TO_AUTO_ADD_ROOTS"
+  print -r -- "frecency: $TO_FRECENCY"
+  print -r -- "frecency threshold: $TO_FRECENCY_THRESHOLD"
 }
 
 _to_add_alias() {
@@ -2248,6 +2653,8 @@ Config:
   TO_WATCH_DEBOUNCE=2          Seconds to wait before watcher reindex
   TO_AUTOWATCH=1               Start a background watcher when loaded
   TO_AUTO_ADD_ROOTS=1          Add temporary-search parent roots automatically
+  TO_FRECENCY=1                Prefer frequently and recently used dirs
+  TO_FRECENCY_THRESHOLD=1      Minimum frecency score before fallback search
   TO_AI_COMMAND               External command that prints candidate dirs
   TO_AI_RANK_COMMAND          External command that ranks candidate dirs from stdin
   TO_HELPER                   Optional to-helper binary path
