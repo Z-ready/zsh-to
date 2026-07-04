@@ -1,6 +1,6 @@
 # reach
 
-[![CI](https://github.com/Z-ready/zsh-to/actions/workflows/ci.yml/badge.svg)](https://github.com/Z-ready/zsh-to/actions/workflows/ci.yml)
+[![CI](https://github.com/Z-ready/reach/actions/workflows/ci.yml/badge.svg)](https://github.com/Z-ready/reach/actions/workflows/ci.yml)
 
 `reach` is a fast zsh directory and object jumper. Its default command is
 `gt`, chosen to avoid common collisions while staying short enough to type all
@@ -16,12 +16,12 @@ gt app backend
 gt repo nginx
 gt cargo tokio
 gt package.json
-gt gh Z-ready/zsh-to
+gt gh Z-ready/reach
 ```
 
 | Tool | Needs visit history | Requires interactive UI | Cross-shell scope | Runtime dependencies |
 | --- | --- | --- | --- | --- |
-| `reach` | No | No | zsh now; bash/fish planned | `zsh`; `fzf` optional |
+| `reach` | No | Only when a match is ambiguous; most jumps stay direct | zsh now; bash/fish planned | `zsh`; `fzf` optional |
 | `zoxide` | Yes | No | broad | shell integration |
 | `broot` | No | Yes | broad | `broot` binary |
 | hand-rolled `fd+fzf` | No | Usually yes | shell snippet specific | `fd`, `fzf`, custom glue |
@@ -40,7 +40,7 @@ brew install ./Formula/reach.rb
 Release installer:
 
 ```zsh
-curl -fsSL https://github.com/Z-ready/zsh-to/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/Z-ready/reach/releases/latest/download/install.sh | sh
 ```
 
 Then add this to `~/.zshrc`:
@@ -59,8 +59,8 @@ gt backend
 For source builds:
 
 ```zsh
-git clone https://github.com/Z-ready/zsh-to.git
-cd zsh-to
+git clone https://github.com/Z-ready/reach.git
+cd reach
 cargo build --release
 
 install -d ~/.local/bin ~/.local/share/reach ~/.local/share/zsh/site-functions
@@ -101,6 +101,9 @@ gt repo ai template       # Git repository metadata
 gt recent                 # recent destinations
 gt -i backend             # force fzf selection
 gt -r /mnt/data backend   # temporary root
+gt --why backend          # explain the selected target
+gt --json backend         # structured match output for scripts/tools
+gt --report-miss          # redacted diagnostic report for issues
 ```
 
 Object commands narrow the same engine:
@@ -116,7 +119,7 @@ gt docker nginx
 gt code authenticate_user
 gt issue 123
 gt pr 456
-gt gh Z-ready/zsh-to
+gt gh Z-ready/reach
 gt vscode backend
 gt fig backend
 ```
@@ -137,6 +140,23 @@ Resolution order:
 6. Bounded live traversal under configured roots.
 7. Deep traversal fallback when the bounded scan misses.
 8. Optional interactive selection.
+
+Most queries still jump directly. `reach` assigns a confidence level to the
+ranked candidates it already has: exact unique names, unique path fragments, or
+large frecency gaps are high confidence and do not interrupt you. Medium
+confidence also jumps directly; set `TO_PRINT_BEFORE_JUMP=1` if you want the
+target echoed to stderr before `cd`.
+
+Low confidence means the result set is broad, tightly scored, or came from a
+deep fallback scan. In an interactive terminal, `reach` asks you to choose from
+a short list, using `fzf` when it is installed and a numbered prompt otherwise.
+In scripts or other non-TTY calls, it never blocks: it warns on stderr and jumps
+to the top candidate. Set `TO_FORCE_DIRECT_JUMP=1` to disable this safety net
+and always take the top result.
+
+Use `gt --why <query>` to see the selected path, matched layer, confidence, and
+top candidates with scores. Use `gt --json <query>` for stable machine-readable
+output shaped for editor plugins and scripts.
 
 `reach-helper` owns the hot path through Rust and bundled SQLite:
 
@@ -169,6 +189,10 @@ TO_SEARCH_PATH_FRAGMENTS=0
 TO_FOLLOW_SYMLINKS=0
 TO_FRECENCY=1
 TO_FRECENCY_THRESHOLD=1
+TO_PRINT_BEFORE_JUMP=0
+TO_FORCE_DIRECT_JUMP=0
+TO_CONFIDENCE_SCORE_GAP_RATIO=2.0
+TO_CONFIDENCE_LOW_SCORE_GAP_RATIO=1.25
 TO_USE_GITIGNORE=1
 TO_REACHIGNORE="$HOME/.reachignore"
 TO_HOOK_TIMEOUT=5

@@ -6,6 +6,11 @@
 : ${TO_ROOT_MODE:=home}
 : ${TO_FRECENCY:=1}
 : ${TO_FRECENCY_THRESHOLD:=1}
+: ${TO_PRINT_BEFORE_JUMP:=0}
+: ${TO_FORCE_DIRECT_JUMP:=0}
+: ${TO_CONFIDENCE_SCORE_GAP_RATIO:=2.0}
+: ${TO_CONFIDENCE_LOW_SCORE_GAP_RATIO:=1.25}
+: ${TO_REPORT_INCLUDE_QUERY:=0}
 
 typeset -ga TO_ROOTS
 typeset -ga TO_EXCLUDES
@@ -19,6 +24,11 @@ typeset -g TO_AUTO_ADD_ROOTS
 typeset -g TO_ROOT_MODE
 typeset -g TO_FRECENCY
 typeset -g TO_FRECENCY_THRESHOLD
+typeset -g TO_PRINT_BEFORE_JUMP
+typeset -g TO_FORCE_DIRECT_JUMP
+typeset -g TO_CONFIDENCE_SCORE_GAP_RATIO
+typeset -g TO_CONFIDENCE_LOW_SCORE_GAP_RATIO
+typeset -g TO_REPORT_INCLUDE_QUERY
 typeset -g TO_OPEN_COMMAND
 typeset -g TO_VSCODE_COMMAND
 typeset -g TO_FIG_COMMAND
@@ -96,9 +106,14 @@ _to_apply_config_defaults() {
   _to_apply_bool_default TO_AUTOWATCH 0
   _to_apply_bool_default TO_AUTO_ADD_ROOTS 0
   _to_apply_bool_default TO_FRECENCY 1
+  _to_apply_bool_default TO_PRINT_BEFORE_JUMP 0
+  _to_apply_bool_default TO_FORCE_DIRECT_JUMP 0
+  _to_apply_bool_default TO_REPORT_INCLUDE_QUERY 0
   _to_apply_bool_default TO_USE_GITIGNORE 1
   _to_apply_bool_default TO_SHOW_DEEP_SCAN_PROMPT 1
   _to_apply_nonnegative_number_default TO_FRECENCY_THRESHOLD 1
+  _to_apply_nonnegative_number_default TO_CONFIDENCE_SCORE_GAP_RATIO 2.0
+  _to_apply_nonnegative_number_default TO_CONFIDENCE_LOW_SCORE_GAP_RATIO 1.25
   _to_apply_nonnegative_int_default TO_WATCH_DEBOUNCE 2
   _to_apply_positive_int_default TO_HOOK_TIMEOUT 5
   _to_apply_root_mode_default
@@ -130,6 +145,11 @@ _to_apply_config_defaults() {
 : ${TO_ROOT_MODE:=home}
 : ${TO_FRECENCY:=1}
 : ${TO_FRECENCY_THRESHOLD:=1}
+: ${TO_PRINT_BEFORE_JUMP:=0}
+: ${TO_FORCE_DIRECT_JUMP:=0}
+: ${TO_CONFIDENCE_SCORE_GAP_RATIO:=2.0}
+: ${TO_CONFIDENCE_LOW_SCORE_GAP_RATIO:=1.25}
+: ${TO_REPORT_INCLUDE_QUERY:=0}
 : ${TO_USE_GITIGNORE:=1}
 : ${TO_SHOW_DEEP_SCAN_PROMPT:=1}
 _TO_AUTOWATCH_PID_FILE="$TO_CONFIG_HOME/watch.pid"
@@ -1265,13 +1285,36 @@ _to_helper_scan_roots_ref() {
   local mode="$3"
   local deep="${4:-0}"
   shift 4
-  local -a roots args
+  local -a scan_roots args
   local root
 
   [[ -n "$TO_HELPER" && -x "$TO_HELPER" ]] || return 1
-  eval "roots=(\"\${${roots_ref}[@]}\")"
+  eval "scan_roots=(\"\${${roots_ref}[@]}\")"
   args=(scan --kind "$kind" --mode "$mode" --max-depth "$TO_MAX_DEPTH" --reachignore "$TO_REACHIGNORE")
-  for root in "${roots[@]}"; do
+  for root in "${scan_roots[@]}"; do
+    [[ -d "$root" ]] && args+=(--root "${root:A}")
+  done
+  (( ${#args[(I)--root]} > 0 )) || return 1
+  (( TO_FOLLOW_SYMLINKS == 1 )) && args+=(--follow-links)
+  (( TO_USE_GITIGNORE == 0 )) && args+=(--no-gitignore)
+  (( deep == 1 )) && args+=(--deep-fallback)
+  (( TO_SHOW_DEEP_SCAN_PROMPT == 0 )) && args+=(--no-deep-prompt)
+  "$TO_HELPER" "${args[@]}" -- "$@" 2>/dev/null
+}
+
+_to_helper_scan_roots_ref_with_layer() {
+  local roots_ref="$1"
+  local kind="$2"
+  local mode="$3"
+  local deep="${4:-0}"
+  shift 4
+  local -a scan_roots args
+  local root
+
+  [[ -n "$TO_HELPER" && -x "$TO_HELPER" ]] || return 1
+  eval "scan_roots=(\"\${${roots_ref}[@]}\")"
+  args=(scan --with-layer --kind "$kind" --mode "$mode" --max-depth "$TO_MAX_DEPTH" --reachignore "$TO_REACHIGNORE")
+  for root in "${scan_roots[@]}"; do
     [[ -d "$root" ]] && args+=(--root "${root:A}")
   done
   (( ${#args[(I)--root]} > 0 )) || return 1
@@ -2877,6 +2920,485 @@ _to_collect_matches() {
   fi
 }
 
+_to_layer_label() {
+  case "$1" in
+    history) print -r -- "history" ;;
+    index|file_cache) print -r -- "index" ;;
+    3|deep_fallback) print -r -- "deep_fallback" ;;
+    *) print -r -- "realtime_traverse" ;;
+  esac
+}
+
+_to_candidate_score() {
+  local dir="${1:A}"
+  local frecency fields last hits depth score
+
+  frecency="$(_to_frecency_fields "$dir")"
+  score="${frecency%%	*}"
+  if (( ${score:-0} > 0 )); then
+    printf '%.6f\n' "$score"
+    return
+  fi
+
+  fields="$(_to_dir_usage_fields "$dir")"
+  last="${fields%%	*}"
+  hits="${fields#*	}"
+  depth="$(_to_dir_rank_depth "$dir")"
+  score=$(( ${hits:-0} + (${last:-0} > 0 ? 1 : 0) + (1.0 / (${depth:-0} + 1)) ))
+  printf '%.6f\n' "$score"
+}
+
+_to_query_has_path_signal() {
+  (( $# == 1 )) && [[ "$1" == */* ]]
+}
+
+_to_confidence_for_candidates() {
+  local layer="$1"
+  shift
+  local -a queries candidates scores
+  local query_l name_l top second ratio
+
+  queries=("$@")
+  candidates=("${_TO_CANDIDATE_PATHS[@]}")
+  scores=("${_TO_CANDIDATE_SCORES[@]}")
+  (( ${#candidates} > 0 )) || {
+    print -r -- "low"
+    return
+  }
+  if [[ "$layer" == "deep_fallback" ]]; then
+    print -r -- "low"
+    return
+  fi
+  query_l="${(L)${(j: :)queries}}"
+  name_l="${(L)candidates[1]:t}"
+  if (( ${#candidates} == 1 )) && { [[ "$name_l" == "$query_l" ]] || _to_query_has_path_signal "${queries[@]}"; }; then
+    print -r -- "high"
+    return
+  fi
+  if (( ${#scores} >= 2 )); then
+    top="${scores[1]:-0}"
+    second="${scores[2]:-0}"
+    if (( ${top:-0} > 0 && ${second:-0} == 0 )); then
+      print -r -- "high"
+      return
+    fi
+    if (( ${second:-0} > 0 )); then
+      ratio=$(( ${top:-0} / ${second:-0} ))
+      if (( ratio >= TO_CONFIDENCE_SCORE_GAP_RATIO )); then
+        print -r -- "high"
+        return
+      fi
+      if (( ${#candidates} >= TO_INTERACTIVE_THRESHOLD && ratio < TO_CONFIDENCE_LOW_SCORE_GAP_RATIO )); then
+        print -r -- "low"
+        return
+      fi
+    elif (( ${#candidates} >= TO_INTERACTIVE_THRESHOLD )); then
+      print -r -- "low"
+      return
+    fi
+  fi
+  if (( ${#candidates} >= TO_INTERACTIVE_THRESHOLD )); then
+    print -r -- "low"
+  else
+    print -r -- "medium"
+  fi
+}
+
+_to_set_candidates() {
+  local layer="$1"
+  shift
+  local candidate_path score
+
+  _TO_CANDIDATE_PATHS=()
+  _TO_CANDIDATE_SCORES=()
+  _TO_CANDIDATE_LAYER="$(_to_layer_label "$layer")"
+  for candidate_path in "$@"; do
+    [[ -d "$candidate_path" ]] || continue
+    _TO_CANDIDATE_PATHS+=("${candidate_path:A}")
+    score="$(_to_candidate_score "$candidate_path")"
+    _TO_CANDIDATE_SCORES+=("$score")
+  done
+}
+
+_to_collect_matches_with_meta() {
+  local roots_ref="$1"
+  shift
+  local -a queries matches rows paths layers ranked
+  local -A layer_by_path
+  local row candidate_path layer top_layer
+
+  queries=("$@")
+  _TO_CANDIDATE_PATHS=()
+  _TO_CANDIDATE_SCORES=()
+  _TO_CANDIDATE_LAYER="index"
+
+  matches=("${(@f)$(_to_frecency_query_sqlite "$roots_ref" "${queries[@]}")}")
+  matches=("${(@)matches:#}")
+  if (( ${#matches} > 0 )); then
+    _to_record_search_outcome "Frecency Hit"
+    _to_set_candidates history "${matches[@]}"
+    return 0
+  fi
+
+  if (( ${#queries} == 1 )); then
+    matches=("${(@f)$(_to_index_query exact "${queries[@]}")}")
+    matches=("${(@)matches:#}")
+    if (( ${#matches} > 0 )); then
+      _to_record_search_outcome "SQLite Hit"
+      _to_set_candidates index "${matches[@]}"
+      return 0
+    fi
+  fi
+
+  if (( ${#queries} == 1 )) && [[ "$queries[1]" != */* ]]; then
+    if [[ -n "$TO_HELPER" && -x "$TO_HELPER" ]]; then
+      rows=("${(@f)$(_to_helper_scan_roots_ref_with_layer "$roots_ref" dir exact 1 "${queries[@]}")}")
+      for row in "${rows[@]}"; do
+        candidate_path="${row%%	*}"
+        layer="${row##*	}"
+        [[ -d "$candidate_path" ]] || continue
+        paths+=("${candidate_path:A}")
+        layers+=("$layer")
+        layer_by_path[${candidate_path:A}]="$layer"
+      done
+      if (( ${#paths} > 0 )); then
+        paths=("${(@f)$(_to_prune_descendant_matches "${paths[@]}")}")
+        ranked=("${(@f)$(printf '%s\n' "${paths[@]}" | _to_rank_matches "${queries[@]}")}")
+        top_layer="${layer_by_path[${ranked[1]}]:-2}"
+        _to_record_search_outcome "Filesystem Fallback"
+        _to_set_candidates "$top_layer" "${ranked[@]}"
+        return 0
+      fi
+    else
+      matches=("${(@f)$(_to_collect_matches_for_mode "$roots_ref" exact "${queries[@]}")}")
+      matches=("${(@)matches:#}")
+      if (( ${#matches} > 0 )); then
+        _to_record_search_outcome "Filesystem Fallback"
+        _to_set_candidates realtime_traverse "${matches[@]}"
+        return 0
+      fi
+    fi
+
+    matches=("${(@f)$(_to_collect_file_parent_matches "$roots_ref" "$queries[1]")}")
+    matches=("${(@)matches:#}")
+    if (( ${#matches} > 0 )); then
+      _to_set_candidates file_cache "${matches[@]}"
+      return 0
+    fi
+  fi
+
+  if (( ${#queries} == 1 )) && [[ "$queries[1]" == */* ]]; then
+    matches=("${(@f)$(_to_index_query path "${queries[@]}")}")
+    matches=("${(@)matches:#}")
+    if (( ${#matches} > 0 )); then
+      _to_record_search_outcome "SQLite Hit"
+      _to_set_candidates index "${(@f)$(_to_prune_descendant_matches "${matches[@]}")}"
+      return 0
+    fi
+
+    matches=("${(@f)$(_to_collect_matches_for_mode "$roots_ref" path "${queries[@]}")}")
+    matches=("${(@)matches:#}")
+    if (( ${#matches} > 0 )); then
+      _to_record_search_outcome "Filesystem Fallback"
+      _to_set_candidates realtime_traverse "${matches[@]}"
+      return 0
+    fi
+  fi
+
+  if (( TO_SEARCH_PATH_FRAGMENTS == 1 || ${#queries} > 1 )); then
+    if (( ${#queries} > 1 )); then
+      matches=("${(@f)$(_to_index_query token "${queries[@]}")}")
+    else
+      matches=("${(@f)$(_to_index_query path "${queries[@]}")}")
+    fi
+    matches=("${(@)matches:#}")
+    if (( ${#matches} > 0 )); then
+      _to_record_search_outcome "SQLite Hit"
+      _to_set_candidates index "${(@f)$(_to_prune_descendant_matches "${matches[@]}")}"
+      return 0
+    fi
+
+    matches=("${(@f)$(_to_collect_matches_for_mode "$roots_ref" broad "${queries[@]}")}")
+    matches=("${(@)matches:#}")
+    if (( ${#matches} > 0 )); then
+      _to_record_search_outcome "Filesystem Fallback"
+      _to_set_candidates realtime_traverse "${matches[@]}"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+_to_json_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\t'/\\t}"
+  print -r -- "$value"
+}
+
+_to_print_candidates_json() {
+  local limit="${1:-5}"
+  local i json_path score comma=""
+
+  print -n -- "["
+  for i in {1..${#_TO_CANDIDATE_PATHS}}; do
+    (( i > limit )) && break
+    json_path="$(_to_json_escape "$_TO_CANDIDATE_PATHS[$i]")"
+    score="${_TO_CANDIDATE_SCORES[$i]:-0}"
+    print -n -- "${comma}{\"path\":\"$json_path\",\"score\":$score}"
+    comma=","
+  done
+  print -n -- "]"
+}
+
+_to_write_last_diagnostic() {
+  local query="$1"
+  local matched="$2"
+  local confidence="$3"
+  local layer="$4"
+  local file="$TO_CONFIG_HOME/last-diagnostic"
+  local display_query features terms_count i
+  local -a query_terms
+
+  mkdir -p "$TO_CONFIG_HOME" 2>/dev/null || return 0
+  if (( TO_REPORT_INCLUDE_QUERY == 1 )); then
+    display_query="$query"
+  else
+    query_terms=("${(@s: :)query}")
+    terms_count="${#query_terms}"
+    features="len=${#query};terms=$terms_count;slash=$([[ "$query" == */* ]] && print yes || print no)"
+    display_query="<redacted:$features>"
+  fi
+  {
+    print -r -- "query: $display_query"
+    if (( TO_REPORT_INCLUDE_QUERY == 1 )); then
+      print -r -- "matched_path: ${matched:t}"
+    else
+      print -r -- "matched_path: <redacted>"
+    fi
+    print -r -- "confidence: $confidence"
+    print -r -- "matched_layer: $layer"
+    print -r -- "candidates:"
+    for i in {1..${#_TO_CANDIDATE_PATHS}}; do
+      (( i > 5 )) && break
+      if (( TO_REPORT_INCLUDE_QUERY == 1 )); then
+        print -r -- "  - ${_TO_CANDIDATE_PATHS[$i]:t} score=${_TO_CANDIDATE_SCORES[$i]:-0}"
+      else
+        print -r -- "  - <candidate-$i> score=${_TO_CANDIDATE_SCORES[$i]:-0}"
+      fi
+    done
+  } > "$file" 2>/dev/null || true
+}
+
+_to_print_why() {
+  local query="$1"
+  local matched="$2"
+  local confidence="$3"
+  local layer="$4"
+  local as_json="$5"
+  local escaped_query escaped_match
+  local i
+
+  if [[ "$as_json" == 1 ]]; then
+    escaped_query="$(_to_json_escape "$query")"
+    escaped_match="$(_to_json_escape "$matched")"
+    print -n -- "{\"query\":\"$escaped_query\",\"matched_path\":\"$escaped_match\",\"confidence\":\"$confidence\",\"matched_layer\":\"$layer\",\"candidates\":"
+    _to_print_candidates_json 5
+    print -- "}"
+    return
+  fi
+
+  print -r -- "query: $query"
+  print -r -- "matched_path: $matched"
+  print -r -- "confidence: $confidence"
+  print -r -- "matched_layer: $layer"
+  print -r -- "candidates:"
+  for i in {1..${#_TO_CANDIDATE_PATHS}}; do
+    (( i > 5 )) && break
+    print -r -- "  $i. ${_TO_CANDIDATE_PATHS[$i]} (score=${_TO_CANDIDATE_SCORES[$i]:-0})"
+  done
+}
+
+_to_explain_query() {
+  local as_json=0
+  local -a roots queries
+  local target query_text confidence layer
+
+  if [[ "${1:-}" == "--json" ]]; then
+    as_json=1
+    shift
+  fi
+
+  _to_load_roots
+  roots=("${TO_ROOTS[@]}")
+  while (( $# > 0 )); do
+    case "$1" in
+      -r|--from)
+        shift
+        [[ -n "$1" ]] || return 2
+        roots=("$(_to_expand_path "$1")")
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        print -u2 -- "to: unknown option: $1"
+        return 2
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  queries=("$@")
+  (( ${#queries} > 0 )) || {
+    print -u2 -- "to: usage: to --why <query...>"
+    return 2
+  }
+  _to_collect_matches_with_meta roots "${queries[@]}" || {
+    _to_record_search_outcome "Miss"
+    _to_print_no_match_advice "directory" "${queries[@]}"
+    return 1
+  }
+  target="${_TO_CANDIDATE_PATHS[1]}"
+  query_text="${(j: :)queries}"
+  confidence="$(_to_confidence_for_candidates "$_TO_CANDIDATE_LAYER" "${queries[@]}")"
+  layer="$_TO_CANDIDATE_LAYER"
+  _to_write_last_diagnostic "$query_text" "$target" "$confidence" "$layer"
+  _to_print_why "$query_text" "$target" "$confidence" "$layer" "$as_json"
+}
+
+_to_query_text_from_args() {
+  local -a query_parts
+
+  while (( $# > 0 )); do
+    case "$1" in
+      -i)
+        shift
+        ;;
+      -r|--from)
+        shift 2
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        shift
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  query_parts=("$@")
+  print -r -- "${(j: :)query_parts}"
+}
+
+_to_json_jump() {
+  local force_interactive=0
+  local -a roots queries matches
+  local alias_target target choose_status query_text confidence layer
+
+  _to_load_roots
+  roots=("${TO_ROOTS[@]}")
+  while (( $# > 0 )); do
+    case "$1" in
+      -i)
+        force_interactive=1
+        shift
+        ;;
+      -r|--from)
+        shift
+        [[ -n "$1" ]] || return 2
+        roots=("$(_to_expand_path "$1")")
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        print -u2 -- "to: unknown option: $1"
+        return 2
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  queries=("$@")
+  (( ${#queries} > 0 )) || return 2
+  query_text="${(j: :)queries}"
+
+  if (( ${#queries} == 1 )); then
+    alias_target="$(_to_builtin_alias "$queries[1]")"
+    if [[ -n "$alias_target" && "$force_interactive" != 1 ]]; then
+      _to_set_candidates index "$alias_target"
+    else
+      _to_collect_matches_with_meta roots "${queries[@]}" || true
+    fi
+  else
+    _to_collect_matches_with_meta roots "${queries[@]}" || true
+  fi
+
+  matches=("${_TO_CANDIDATE_PATHS[@]}")
+  if (( ${#matches} == 0 )); then
+    _to_record_search_outcome "Miss"
+    _TO_CANDIDATE_PATHS=()
+    _TO_CANDIDATE_SCORES=()
+    _to_write_last_diagnostic "$query_text" "" "low" "unknown"
+    _to_print_no_match_advice "directory" "${queries[@]}"
+    return 1
+  fi
+
+  confidence="$(_to_confidence_for_candidates "$_TO_CANDIDATE_LAYER" "${queries[@]}")"
+  layer="$_TO_CANDIDATE_LAYER"
+  _TO_LAST_CONFIDENCE="$confidence"
+  _TO_LAST_LAYER="$layer"
+  target="$(_to_choose_confident_match "$force_interactive" "$query_text" "${matches[@]}")"
+  choose_status=$?
+  [[ $choose_status -eq 0 && -n "$target" ]] || return "$choose_status"
+
+  _to_write_last_diagnostic "$query_text" "$target" "$confidence" "$layer"
+  _to_print_why "$query_text" "$target" "$confidence" "$layer" 1
+  cd "$target" && _to_maybe_add_external_root "$PWD" && _to_after_cd "$PWD"
+}
+
+_to_report_miss() {
+  local file="$TO_CONFIG_HOME/last-diagnostic"
+  local roots_count ignore_count
+
+  _to_load_roots
+  roots_count="${#TO_ROOTS}"
+  ignore_count="${#TO_EXCLUDES}"
+  print -r -- "reach diagnostic report"
+  print -r -- ""
+  if [[ -r "$file" ]]; then
+    cat "$file"
+  else
+    print -r -- "query: <none recorded>"
+    print -r -- "matched_path: <none>"
+    print -r -- "confidence: unknown"
+    print -r -- "matched_layer: unknown"
+    print -r -- "candidates: []"
+  fi
+  print -r -- ""
+  print -r -- "config:"
+  print -r -- "  roots_count: $roots_count"
+  print -r -- "  ignore_rule_count: $ignore_count"
+  print -r -- "  root_mode: $TO_ROOT_MODE"
+  print -r -- "  max_depth: $TO_MAX_DEPTH"
+  print -r -- "  frecency: $TO_FRECENCY"
+  print -r -- ""
+  print -r -- "You can paste this report into a GitHub issue."
+}
+
 _to_choose_numbered() {
   local -a matches
   local reply choice
@@ -2921,10 +3443,60 @@ _to_choose_match() {
   _to_choose_numbered "${matches[@]}"
 }
 
+_to_choose_confident_match() {
+  local force_interactive="$1"
+  local query="$2"
+  shift 2
+  local -a matches
+  local confidence layer target choose_status
+
+  matches=("$@")
+  (( ${#matches} > 0 )) || return 1
+
+  if (( force_interactive == 1 )); then
+    _to_choose_match 1 "${matches[@]}"
+    return
+  fi
+
+  confidence="$(_to_confidence_for_candidates "$_TO_CANDIDATE_LAYER" "${(@s: :)query}")"
+  layer="$_TO_CANDIDATE_LAYER"
+  _TO_LAST_CONFIDENCE="$confidence"
+  _TO_LAST_LAYER="$layer"
+  target="$matches[1]"
+
+  case "$confidence" in
+    high)
+      print -r -- "$target"
+      ;;
+    medium)
+      (( TO_PRINT_BEFORE_JUMP == 1 )) && print -u2 -- "to: $target"
+      print -r -- "$target"
+      ;;
+    low)
+      if (( TO_FORCE_DIRECT_JUMP == 1 )); then
+        print -r -- "$target"
+        return
+      fi
+      if [[ ! -t 0 || ! -t 1 ]]; then
+        print -u2 -- "to: warning: low-confidence match; non-interactive shell, jumping to top result: $target"
+        print -r -- "$target"
+        return
+      fi
+      if command -v fzf >/dev/null 2>&1; then
+        printf '%s\n' "${matches[@]}" | fzf --height=40% --reverse --prompt='to> '
+        return
+      fi
+      _to_choose_numbered "${matches[@]}"
+      choose_status=$?
+      return "$choose_status"
+      ;;
+  esac
+}
+
 _to_resolve() {
   local force_interactive=0
   local -a roots queries matches
-  local alias_target exact_target
+  local alias_target query_text confidence layer
 
   _to_load_roots
   roots=("${TO_ROOTS[@]}")
@@ -2961,33 +3533,22 @@ _to_resolve() {
   if (( ${#queries} == 1 )); then
     alias_target="$(_to_builtin_alias "$queries[1]")"
     if [[ -n "$alias_target" && "$force_interactive" != 1 ]]; then
+      _to_set_candidates index "$alias_target"
+      _TO_LAST_CONFIDENCE=high
+      _TO_LAST_LAYER=index
       print -r -- "$alias_target"
       return
     fi
-
-    if [[ "$force_interactive" != 1 && "$queries[1]" != */* ]]; then
-      exact_target="$(_to_frecency_query_sqlite roots "$queries[1]" | head -n 1)"
-      if [[ -n "$exact_target" ]]; then
-        _to_record_search_outcome "Frecency Hit"
-        print -r -- "$exact_target"
-        return
-      fi
-      exact_target="$(_to_first_exact_match roots "$queries[1]")"
-      if [[ -n "$exact_target" ]]; then
-        print -r -- "$exact_target"
-        return
-      fi
-      exact_target="$(_to_collect_file_parent_matches roots "$queries[1]" | head -n 1)"
-      if [[ -n "$exact_target" ]]; then
-        print -r -- "$exact_target"
-        return
-      fi
-      (( TO_SEARCH_PATH_FRAGMENTS == 1 )) || return 1
-    fi
   fi
 
-  matches=("${(@f)$(_to_collect_matches roots "${queries[@]}")}")
-  _to_choose_match "$force_interactive" "${matches[@]}"
+  _to_collect_matches_with_meta roots "${queries[@]}" || return 1
+  matches=("${_TO_CANDIDATE_PATHS[@]}")
+  query_text="${(j: :)queries}"
+  confidence="$(_to_confidence_for_candidates "$_TO_CANDIDATE_LAYER" "${queries[@]}")"
+  layer="$_TO_CANDIDATE_LAYER"
+  _TO_LAST_CONFIDENCE="$confidence"
+  _TO_LAST_LAYER="$layer"
+  _to_choose_confident_match "$force_interactive" "$query_text" "${matches[@]}"
 }
 
 _to_use_root() {
@@ -3444,31 +4005,31 @@ _to_git_remote_url() {
 
 _to_github_url_from_remote() {
   local remote="$1"
-  local path
+  local repo_path
 
   case "$remote" in
     git@github.com:*)
-      path="${remote#git@github.com:}"
+      repo_path="${remote#git@github.com:}"
       ;;
     ssh://git@github.com/*)
-      path="${remote#ssh://git@github.com/}"
+      repo_path="${remote#ssh://git@github.com/}"
       ;;
     ssh://git@ssh.github.com:443/*)
-      path="${remote#ssh://git@ssh.github.com:443/}"
+      repo_path="${remote#ssh://git@ssh.github.com:443/}"
       ;;
     https://github.com/*)
-      path="${remote#https://github.com/}"
+      repo_path="${remote#https://github.com/}"
       ;;
     http://github.com/*)
-      path="${remote#http://github.com/}"
+      repo_path="${remote#http://github.com/}"
       ;;
     *)
       return 1
       ;;
   esac
-  path="${path%.git}"
-  [[ "$path" == */* ]] || return 1
-  print -r -- "https://github.com/$path"
+  repo_path="${repo_path%.git}"
+  [[ "$repo_path" == */* ]] || return 1
+  print -r -- "https://github.com/$repo_path"
 }
 
 _to_system_open_command() {
@@ -3676,6 +4237,9 @@ Usage:
   to -i <query...>          Force interactive selection
   to -r <root> <query...>   Search from a temporary root
   to --from <root> <query>  Search from a temporary root
+  to --why <query...>       Explain the match without jumping
+  to --json <query...>      Emit structured match JSON without jumping
+  to --report-miss          Print the last redacted match diagnostic
   to use [dir]              Add a search root
   to unuse [dir]            Remove a search root
   to roots                  List search roots
@@ -3721,6 +4285,8 @@ Config:
   TO_AUTO_ADD_ROOTS=1          Add temporary-search parent roots automatically
   TO_FRECENCY=1                Prefer frequently and recently used dirs
   TO_FRECENCY_THRESHOLD=1      Minimum frecency score before fallback search
+  TO_FORCE_DIRECT_JUMP=1       Always jump to the top candidate
+  TO_PRINT_BEFORE_JUMP=1       Print medium-confidence targets before cd
   TO_AI_COMMAND               External command that prints candidate dirs
   TO_AI_RANK_COMMAND          External command that ranks candidate dirs from stdin
   TO_OPEN_COMMAND             External URL opener for to gh
@@ -3732,7 +4298,7 @@ EOF
 }
 
 _reach_dispatch() {
-  local target alias_target workspace_target resolve_status
+  local target alias_target workspace_target resolve_status query_text
 
   case "$1" in
     use)
@@ -3845,6 +4411,17 @@ _reach_dispatch() {
       shift
       _to_doctor "${1:-}"
       ;;
+    --why)
+      shift
+      _to_explain_query "$@"
+      ;;
+    --json)
+      shift
+      _to_json_jump "$@"
+      ;;
+    --report-miss)
+      _to_report_miss
+      ;;
     --reindex)
       _to_reindex
       ;;
@@ -3877,9 +4454,15 @@ _reach_dispatch() {
       fi
       if [[ $resolve_status -ne 0 || -z "$target" ]]; then
         _to_record_search_outcome "Miss"
+        query_text="${(j: :)@}"
+        _TO_CANDIDATE_PATHS=()
+        _TO_CANDIDATE_SCORES=()
+        _to_write_last_diagnostic "$query_text" "" "low" "unknown"
         _to_print_no_match_advice "directory" "$@"
         return 1
       fi
+      query_text="${(j: :)@}"
+      _to_write_last_diagnostic "$query_text" "$target" "${_TO_LAST_CONFIDENCE:-unknown}" "${_TO_LAST_LAYER:-unknown}"
       cd "$target" && _to_maybe_add_external_root "$PWD" && _to_after_cd "$PWD"
       ;;
   esac

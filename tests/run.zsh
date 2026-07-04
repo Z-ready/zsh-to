@@ -81,6 +81,14 @@ mkdir -p \
   "$SEARCH_ROOT/history/cold-target" \
   "$SEARCH_ROOT/history/hot-file" \
   "$SEARCH_ROOT/history/cold-file" \
+  "$SEARCH_ROOT/confidence/alpha-choice" \
+  "$SEARCH_ROOT/confidence/beta-choice" \
+  "$SEARCH_ROOT/confidence/gamma-choice" \
+  "$SEARCH_ROOT/confidence/alpha-medium" \
+  "$SEARCH_ROOT/confidence/beta-medium" \
+  "$SEARCH_ROOT/confidence/alpha-force" \
+  "$SEARCH_ROOT/confidence/beta-force" \
+  "$SEARCH_ROOT/confidence/sensitive-name" \
   "$SEARCH_ROOT/other/backend"
 
 touch \
@@ -274,6 +282,64 @@ ok "reindex runs without sqlite errors"
 
 [[ -r "$TO_INDEX_FILE" || -r "$TO_INDEX_TSV_FILE" ]] || fail "index file was not created"
 ok "reindex creates cache"
+
+confidence_high="$(to --why -r "$SEARCH_ROOT" alpha-choice)"
+[[ "$confidence_high" == *"confidence: high"* && "$confidence_high" == *"matched_layer: index"* ]] \
+  || fail "high-confidence why output missing expected fields: $confidence_high"
+ok "why reports high-confidence exact match"
+
+confidence_json="$(to --json -r "$SEARCH_ROOT" alpha-choice)"
+[[ "$confidence_json" == \{* && "$confidence_json" == *'"query":"alpha-choice"'* && "$confidence_json" == *'"confidence":"high"'* && "$confidence_json" == *'"candidates":['* ]] \
+  || fail "json output missing expected fields: $confidence_json"
+ok "json reports structured match data"
+
+old_print_before_jump="$TO_PRINT_BEFORE_JUMP"
+old_search_path_fragments="$TO_SEARCH_PATH_FRAGMENTS"
+TO_SEARCH_PATH_FRAGMENTS=1
+TO_PRINT_BEFORE_JUMP=1
+medium_output="$ROOT/medium-confidence.err"
+cd "$ROOT" || fail "could not reset cwd"
+to -r "$SEARCH_ROOT" medium > /dev/null 2> "$medium_output"
+[[ "$PWD" == "${SEARCH_ROOT:A}/confidence/"*"-medium" ]] \
+  || fail "medium-confidence query did not jump to a medium candidate: $PWD"
+ok "medium-confidence query jumps directly"
+[[ "$(<"$medium_output")" == *"$PWD"* ]] \
+  || fail "medium-confidence jump did not print target: $(<"$medium_output")"
+TO_PRINT_BEFORE_JUMP="$old_print_before_jump"
+ok "medium-confidence jump can print target before cd"
+
+TO_SEARCH_PATH_FRAGMENTS=1
+low_output="$ROOT/low-confidence.err"
+cd "$ROOT" || fail "could not reset cwd"
+to -r "$SEARCH_ROOT" choice > /dev/null 2> "$low_output"
+[[ "$PWD" == "${SEARCH_ROOT:A}/confidence/"*"-choice" ]] \
+  || fail "low-confidence non-tty did not jump to a choice candidate: $PWD"
+ok "low-confidence non-tty jumps to top result"
+[[ "$(<"$low_output")" == *"low-confidence match; non-interactive shell"* ]] \
+  || fail "low-confidence non-tty warning missing: $(<"$low_output")"
+ok "low-confidence non-tty does not hang"
+
+old_force_direct="$TO_FORCE_DIRECT_JUMP"
+TO_FORCE_DIRECT_JUMP=1
+force_output="$ROOT/force-direct.err"
+cd "$ROOT" || fail "could not reset cwd"
+to -r "$SEARCH_ROOT" force > /dev/null 2> "$force_output"
+[[ "$PWD" == "${SEARCH_ROOT:A}/confidence/"*"-force" ]] \
+  || fail "force direct did not jump to a force candidate: $PWD"
+ok "force direct jumps to top result"
+[[ "$(<"$force_output")" != *"low-confidence match"* ]] \
+  || fail "force direct should suppress low-confidence safety warning: $(<"$force_output")"
+TO_FORCE_DIRECT_JUMP="$old_force_direct"
+TO_SEARCH_PATH_FRAGMENTS="$old_search_path_fragments"
+ok "force direct bypasses low-confidence safety net"
+
+to --why -r "$SEARCH_ROOT" sensitive-name > /dev/null
+report_output="$(to --report-miss)"
+[[ "$report_output" == *"reach diagnostic report"* && "$report_output" == *"confidence:"* && "$report_output" == *"You can paste this report into a GitHub issue."* ]] \
+  || fail "report miss missing expected diagnostic text: $report_output"
+[[ "$report_output" != *"${SEARCH_ROOT:A}"* && "$report_output" != *"sensitive"* ]] \
+  || fail "report miss leaked sensitive query/path details: $report_output"
+ok "report miss redacts query and paths by default"
 
 # Regression: fd emits absolute paths, so indexed paths must not be re-prefixed
 # with the root (which produced doubled, non-existent paths).

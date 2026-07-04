@@ -254,6 +254,7 @@ fn terms_after_separator(args: &[String]) -> Result<Vec<String>, CliError> {
                 | "--deep-fallback"
                 | "--no-deep-prompt"
                 | "--debug-layer"
+                | "--with-layer"
         ) {
         } else if arg.starts_with('-') {
             return Err(CliError::UnknownOption(arg.to_owned()));
@@ -733,7 +734,13 @@ fn scan_command(args: &[String]) -> Result<String, CliError> {
     let rows = outcome
         .matches
         .into_iter()
-        .map(|path| path.to_string_lossy().to_string())
+        .map(|path| {
+            if has_flag(args, "--with-layer") {
+                format!("{}\t{}", path.to_string_lossy(), outcome.layer)
+            } else {
+                path.to_string_lossy().to_string()
+            }
+        })
         .collect::<Vec<_>>();
     Ok(join_lines(&rows))
 }
