@@ -1,7 +1,7 @@
 class Reach < Formula
   desc "Fast zsh directory and object jumper"
-  homepage "https://github.com/Z-ready/zsh-to"
-  url "https://github.com/Z-ready/zsh-to/archive/refs/tags/v1.6.0.tar.gz"
+  homepage "https://github.com/Z-ready/zsh-reach"
+  url "https://github.com/Z-ready/zsh-reach/archive/refs/tags/v1.6.0.tar.gz"
   sha256 "1e596ca784c31209da609f1388ea3ccd5c7af368185b99eeaa03bc0febb510a0"
   license "MIT"
 

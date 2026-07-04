@@ -1,6 +1,6 @@
 # reach
 
-[![CI](https://github.com/Z-ready/reach/actions/workflows/ci.yml/badge.svg)](https://github.com/Z-ready/reach/actions/workflows/ci.yml)
+[![CI](https://github.com/Z-ready/zsh-reach/actions/workflows/ci.yml/badge.svg)](https://github.com/Z-ready/zsh-reach/actions/workflows/ci.yml)
 
 `reach` is a fast zsh directory and object jumper. Its default command is
 `gt`, chosen to avoid common collisions while staying short enough to type all
@@ -16,7 +16,7 @@ gt app backend
 gt repo nginx
 gt cargo tokio
 gt package.json
-gt gh Z-ready/reach
+gt gh Z-ready/zsh-reach
 ```
 
 | Tool | Needs visit history | Requires interactive UI | Cross-shell scope | Runtime dependencies |
@@ -40,7 +40,7 @@ brew install ./Formula/reach.rb
 Release installer:
 
 ```zsh
-curl -fsSL https://github.com/Z-ready/reach/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/Z-ready/zsh-reach/releases/latest/download/install.sh | sh
 ```
 
 Then add this to `~/.zshrc`:
@@ -59,8 +59,8 @@ gt backend
 For source builds:
 
 ```zsh
-git clone https://github.com/Z-ready/reach.git
-cd reach
+git clone https://github.com/Z-ready/zsh-reach.git
+cd zsh-reach
 cargo build --release
 
 install -d ~/.local/bin ~/.local/share/reach ~/.local/share/zsh/site-functions
@@ -119,7 +119,7 @@ gt docker nginx
 gt code authenticate_user
 gt issue 123
 gt pr 456
-gt gh Z-ready/reach
+gt gh Z-ready/zsh-reach
 gt vscode backend
 gt fig backend
 ```

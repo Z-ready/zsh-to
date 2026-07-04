@@ -23,7 +23,7 @@ After initialization, the zsh function named `to` handles directory jumps:
   to git
   to cargo tokio
   to code auth
-  to gh z-ready/zsh-to
+  to gh z-ready/zsh-reach
   to vscode backend
 
 After shell integration, `to` combines frecency history, a SQLite index, and

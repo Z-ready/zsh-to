@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-REACH_REPO="${REACH_REPO:-Z-ready/zsh-to}"
+REACH_REPO="${REACH_REPO:-Z-ready/zsh-reach}"
 REACH_VERSION="${REACH_VERSION:-latest}"
 REACH_PREFIX="${REACH_PREFIX:-$HOME/.local}"
 BIN_DIR="$REACH_PREFIX/bin"
